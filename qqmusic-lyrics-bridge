@@ -17,6 +17,8 @@ import argparse
 import logging
 import threading
 import configparser
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import websocket
 
@@ -364,6 +366,37 @@ def read_plasmoid_interval():
     return 300
 
 
+# ─── Auto-restart QQ Music ─────────────────────────────────────────────────
+
+def is_qqmusic_running():
+    """Check if QQ Music process exists."""
+    for line in (subprocess.check_output(["pgrep", "-a", "qqmusic"], text=True)
+                 .strip().split("\n") if os.system("pgrep qqmusic >/dev/null 2>&1") == 0 else []):
+        pass
+    return os.system("pgrep qqmusic >/dev/null 2>&1") == 0
+
+
+def restart_qqmusic_with_debug(port):
+    """If QQ Music is running without debug port, restart it with one."""
+    try:
+        output = subprocess.check_output(["pgrep", "-a", "qqmusic"], text=True)
+        for line in output.strip().split("\n"):
+            if "remote-debugging-port" in line:
+                return  # already has debug port
+            if "/qqmusic" in line and "--no-sandbox" in line:
+                log.info("QQ Music lacks debug port, restarting...")
+                subprocess.run(["pkill", "-9", "qqmusic"], timeout=5)
+                time.sleep(2)
+                subprocess.Popen(
+                    ["/usr/bin/qqmusic", "--no-sandbox", f"--remote-debugging-port={port}"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                log.info(f"QQ Music restarted with debug port {port}")
+                return
+    except Exception:
+        pass
+
+
 # ─── Main loop ────────────────────────────────────────────────────────────
 
 class LyricsBridge:
@@ -381,7 +414,6 @@ class LyricsBridge:
     def run(self):
         log.info(f"Lyrics bridge started (CDP port: {self.port}, interval: {self.interval}ms)")
         log.info(f"Writing to: {LYRICS_FILE}")
-        log.info("Waiting for QQ Music to connect...")
 
         while not _stop.is_set():
             try:
@@ -389,11 +421,13 @@ class LyricsBridge:
                 if song and song.get("title"):
                     self._handle_song(song)
                 else:
+                    # Try to auto-restart QQ Music with debug port
+                    restart_qqmusic_with_debug(self.port)
                     write_lyrics("No song detected")
-                    time.sleep(2)
+                    time.sleep(1)
             except Exception as e:
                 log.error(f"Error: {e}")
-                time.sleep(2)
+                time.sleep(1)
 
     def _handle_song(self, song):
         title = song.get("title", "")
@@ -411,11 +445,29 @@ class LyricsBridge:
             self.parsed_lrc = []
             self.song_start_time = time.time() - position
 
-            # Fetch lyrics from multiple sources
-            lrc = fetch_lrc(title, artist)
-            if not lrc:
-                log.info("  lrclib: no lyrics, trying Netease...")
-                lrc = fetch_lrc_netease(title, artist)
+            # Fetch lyrics from both sources in parallel
+            lrc = ""
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = {
+                    pool.submit(fetch_lrc, title, artist): "lrclib",
+                    pool.submit(fetch_lrc_netease, title, artist): "netease",
+                }
+                for fut in as_completed(futures):
+                    source = futures[fut]
+                    try:
+                        result = fut.result()
+                        if result:
+                            log.info(f"  {source}: lyrics found")
+                            lrc = result
+                            # Cancel remaining futures
+                            for f in futures:
+                                if not f.done():
+                                    f.cancel()
+                            break
+                        else:
+                            log.info(f"  {source}: no lyrics")
+                    except Exception as e:
+                        log.debug(f"  {source} error: {e}")
             if lrc:
                 self.parsed_lrc = parse_lrc(lrc)
                 log.info(f"  Lyrics: {len(self.parsed_lrc)} lines")

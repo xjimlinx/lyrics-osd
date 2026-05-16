@@ -1,3 +1,3 @@
 #!/bin/bash
-# QQ Music launcher with remote debugging enabled for MPRIS2 bridge
+# QQ Music launcher with remote debugging enabled for lyrics bridge
 exec /usr/bin/qqmusic --no-sandbox --remote-debugging-port=9223 "$@"
