@@ -374,10 +374,110 @@ class LyricsBridge:
         self.current_title = ""
         self.current_artist = ""
         self.parsed_lrc = []
-        self.song_start_time = 0  # local epoch when song started
+        self.song_start_time = 0
         self.position = 0
         self.playing = False
         self.last_position_fetch = 0
+        self._ws = None
+
+    def _connect_cdp(self):
+        """Open or reopen CDP WebSocket connection."""
+        self._close_ws()
+        ws_url = get_ws_url(self.port)
+        if not ws_url:
+            self._ws = None
+            return False
+        try:
+            ws = websocket.create_connection(ws_url, timeout=5)
+            # Enable Runtime once
+            cdp_call(ws, "Runtime.enable")
+            time.sleep(0.1)
+            # Flush initial events
+            ws.settimeout(0.3)
+            while True:
+                try:
+                    ws.recv()
+                except Exception:
+                    break
+            self._ws = ws
+            return True
+        except Exception:
+            self._ws = None
+            return False
+
+    def _close_ws(self):
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+    def _extract(self):
+        """Read current song info from persistent CDP connection."""
+        ws = self._ws
+        if not ws:
+            return None
+
+        info = {"title": "", "artist": "", "position": 0, "duration": 0, "playing": False}
+
+        try:
+            # Audio element
+            result = cdp_call(ws, "Runtime.evaluate", {
+                "expression": """
+                    (function() {
+                        var audios = document.querySelectorAll('audio');
+                        for (var i = 0; i < audios.length; i++) {
+                            if (audios[i].duration > 0) return JSON.stringify({
+                                currentTime: audios[i].currentTime,
+                                duration: audios[i].duration,
+                                paused: audios[i].paused
+                            });
+                        }
+                        return '';
+                    })()
+                """,
+                "returnByValue": True,
+            })
+            audio_data = result.get("result", {}).get("value", "")
+            if audio_data:
+                try:
+                    ad = json.loads(audio_data)
+                    info["position"] = ad.get("currentTime", 0)
+                    info["duration"] = ad.get("duration", 0)
+                    info["playing"] = not ad.get("paused", True)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            # Song title/artist
+            result = cdp_call(ws, "Runtime.evaluate", {
+                "expression": """
+                    (function() {
+                        var el = document.querySelector('.player_cont');
+                        if (!el) return '';
+                        var text = (el.innerText || el.textContent || '').trim();
+                        text = text.replace(/\\d{1,2}:\\d{2}\\/\\d{1,2}:\\d{2}/g, '').trim();
+                        text = text.replace(/\\s+\\d+$/, '').trim();
+                        if (text.includes('-') && text.length > 3 && text.length < 120) return text;
+                        return '';
+                    })()
+                """,
+                "returnByValue": True,
+            })
+            meta_val = result.get("result", {}).get("value", "")
+            if meta_val:
+                if " -" in meta_val:
+                    parts = meta_val.rsplit(" -", 1)
+                    info["title"] = parts[0].strip()
+                    info["artist"] = parts[1].strip()
+                else:
+                    info["title"] = meta_val
+
+            return info
+        except Exception as e:
+            log.debug(f"extract error: {e}")
+            self._close_ws()
+            return None
 
     def run(self):
         log.info(f"Lyrics bridge started (CDP port: {self.port}, interval: {self.interval}ms)")
@@ -385,15 +485,23 @@ class LyricsBridge:
 
         while not _stop.is_set():
             try:
-                song = extract_song(self.port)
+                # Ensure CDP connection
+                if not self._ws:
+                    if not self._connect_cdp():
+                        write_lyrics("No song detected")
+                        _stop.wait(1)
+                        continue
+
+                song = self._extract()
                 if song and song.get("title"):
                     self._handle_song(song)
                 else:
                     write_lyrics("No song detected")
-                    time.sleep(1)
+                    _stop.wait(1)
             except Exception as e:
                 log.error(f"Error: {e}")
-                time.sleep(1)
+                self._close_ws()
+                _stop.wait(1)
 
     def _handle_song(self, song):
         title = song.get("title", "")
