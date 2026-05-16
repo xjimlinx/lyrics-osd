@@ -519,7 +519,15 @@ class LyricsBridge:
             self.parsed_lrc = []
             self.song_start_time = time.time() - position
 
-            # Fetch lyrics from both sources in parallel
+            # Write fallback immediately (new song title)
+            write_lyrics(f"{artist} - {title}")
+            write_meta({
+                "title": title, "artist": artist,
+                "position": position, "duration": duration,
+                "playing": playing, "total_lines": 0,
+            })
+
+            # Fetch lyrics from both sources in parallel (background)
             lrc = ""
             with ThreadPoolExecutor(max_workers=2) as pool:
                 futures = {
@@ -533,7 +541,6 @@ class LyricsBridge:
                         if result:
                             log.info(f"  {source}: lyrics found")
                             lrc = result
-                            # Cancel remaining futures
                             for f in futures:
                                 if not f.done():
                                     f.cancel()
