@@ -721,6 +721,7 @@ class LyricsBridge:
         self.last_position_fetch = 0
         self._ws = None
         self._lyric_ws = None
+        self._recorded_lrc = []  # [(timestamp, line), ...] for native mode recording
 
     def _connect_lyric_ws(self):
         """Open WS connection to lyric.html for real-time lyrics."""
@@ -965,6 +966,9 @@ class LyricsBridge:
                         line = self._read_lyric_line()
                         if line and self.current_title:
                             write_lyrics(line)
+                            # Record lyric line for LRC generation (native mode)
+                            if not self._recorded_lrc or self._recorded_lrc[-1][1] != line:
+                                self._recorded_lrc.append((self.position, line))
                             write_meta({
                                 "title": self.current_title,
                                 "artist": self.current_artist,
@@ -999,9 +1003,19 @@ class LyricsBridge:
         playing = song.get("playing", False)
         duration = song.get("duration", 0)
 
-        # Check if song changed
+        # Save recorded LRC from native mode when song changes
         song_id = f"{artist} - {title}"
         if song_id != f"{self.current_artist} - {self.current_title}":
+            if self._recorded_lrc and self.current_title and len(self._recorded_lrc) >= 3:
+                lrc_text = ""
+                for ts, line in self._recorded_lrc:
+                    mins = int(ts // 60)
+                    secs = ts % 60
+                    lrc_text += f"[{mins:02d}:{secs:05.2f}]{line}\n"
+                if lrc_text:
+                    write_cache(self.current_title, self.current_artist, lrc_text)
+                    log.info(f"  Saved recorded LRC: {len(self._recorded_lrc)} lines")
+            self._recorded_lrc = []
             log.info(f"Now playing: {artist} - {title}")
             self.current_title = title
             self.current_artist = artist

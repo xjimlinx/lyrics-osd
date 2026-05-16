@@ -16,6 +16,7 @@ KCM.SimpleKCM {
     property alias cfg_playerType: playerCombo.currentIndex
     property alias cfg_displayMode: displayModeCombo.currentIndex
     property alias cfg_proxyUrl: proxyField.text
+    property alias cfg_showProgress: progressCheck.checked
 
     Kirigami.FormLayout {
         QQC2.Label { text: "刷新"; font.bold: true; topPadding: 8; bottomPadding: 4 }
@@ -52,8 +53,12 @@ KCM.SimpleKCM {
         QQC2.Label { text: "显示"; font.bold: true; topPadding: 8; bottomPadding: 4 }
         QQC2.ComboBox {
             id: displayModeCombo; Kirigami.FormData.label: "显示模式"
-            model: ["单行歌词", "三行歌词+进度条", "两行·当前在上", "两行·当前在下"]
+            model: ["单行歌词", "三行歌词", "两行·当前在上", "两行·当前在下"]
             Component.onCompleted: currentIndex = Number(Plasmoid.configuration.displayMode)
+        }
+        QQC2.CheckBox {
+            id: progressCheck; Kirigami.FormData.label: "进度条"
+            text: "显示播放进度条"
         }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 
