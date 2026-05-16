@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0] - 2026-05-17
+
+### Added
+- 并行请求 lrclib + 网易云，任一返回即可
+- 歌词本地缓存 (~/.cache/lyrics-osd/)，重复播放秒出
+- QQ Music 快捷启动器 qqmusic-debug
+
+### Changed
+- 复用 CDP WebSocket 连接，切歌不再重建
+- 切歌时先写歌手-歌名回退，歌词后台异步加载
+
+### Fixed
+- 配置页标题左对齐
+- 刷新间隔下限从 100ms 降到 50ms
+
 ## [0.1.0] - 2026-05-16
 
 ### Added

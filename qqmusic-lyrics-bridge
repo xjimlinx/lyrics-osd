@@ -31,6 +31,60 @@ log = logging.getLogger("qqmusic-lyrics")
 DEBUG_PORT = 9223
 LYRICS_FILE = "/tmp/lyrics-current.txt"
 META_FILE = "/tmp/lyrics-meta.json"
+CACHE_DIR = os.path.expanduser("~/.cache/lyrics-osd")
+_current_album = ""
+
+
+def cache_key(title, artist):
+    return f"{artist} - {title}".replace("/", "_").replace(" ", "_")[:120]
+
+
+def read_cache(title, artist):
+    """Load cached LRC if exists."""
+    try:
+        path = os.path.join(CACHE_DIR, cache_key(title, artist) + ".lrc")
+        if os.path.exists(path):
+            with open(path) as f:
+                lrc = f.read()
+            if lrc and re.search(r'\[\d+:', lrc):
+                return lrc
+    except Exception:
+        pass
+    return ""
+
+
+def write_cache(title, artist, lrc):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        path = os.path.join(CACHE_DIR, cache_key(title, artist) + ".lrc")
+        with open(path, "w") as f:
+            f.write(lrc)
+    except Exception as e:
+        log.debug(f"write_cache error: {e}")
+
+
+def read_cached_id(title, artist):
+    """Read cached Netease song ID."""
+    try:
+        path = os.path.join(CACHE_DIR, cache_key(title, artist) + ".id")
+        if os.path.exists(path):
+            with open(path) as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return None
+
+
+def write_cached_id(title, artist, sid):
+    """Save Netease song ID to cache."""
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        path = os.path.join(CACHE_DIR, cache_key(title, artist) + ".id")
+        with open(path, "w") as f:
+            f.write(str(sid))
+    except Exception:
+        pass
+CACHE_DIR = os.path.expanduser("~/.cache/lyrics-osd")
 
 _stop = threading.Event()
 
@@ -222,9 +276,136 @@ def fetch_lrc(title, artist):
         return ""
 
 
-def fetch_lrc_netease(title, artist):
-    """Fetch synced LRC from Netease Cloud Music."""
+def fetch_lrc_netease(title, artist, album=""):
+    """Fetch synced LRC from Meting API (search via direct Netease API)."""
+    global _current_album
     if not title:
+        return ""
+
+    # Step 1: Get song ID (cached ID first, then search)
+    sid = read_cached_id(title, artist)
+    if not sid:
+        sid = _search_netease_id(title, artist, album or _current_album)
+    if sid:
+        try:
+            r = requests.get(
+                "https://api.injahow.cn/meting/",
+                params={"type": "lrc", "server": "netease", "id": sid},
+                timeout=10,
+            )
+            r.raise_for_status()
+            lrc = r.text.strip()
+            if lrc and re.search(r'\[\d+:', lrc):
+                write_cached_id(title, artist, sid)
+                return lrc
+        except Exception as e:
+            log.debug(f"meting lrc error: {e}")
+
+    # Fallback: try the Vercel proxy
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
+    lrc = _fetch_via_proxy(title, artist, headers)
+    if lrc:
+        return lrc
+
+    # Last resort: direct Netease API
+    return _fetch_via_direct(title, artist, headers)
+
+
+def _search_netease_id(title, artist, album=""):
+    """Search Netease and return the best matching song ID."""
+    try:
+        keyword = f"{title} {artist} {album}" if album else f"{title} {artist}"
+        r = requests.get(
+            "https://music.163.com/api/search/get",
+            params={"s": keyword, "type": 1, "limit": 10},
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        songs = (r.json().get("result", {}) or {}).get("songs", [])
+        if not songs:
+            return None
+
+        best = None
+        for s in songs:
+            sname = s.get("name", "")
+            sartist_list = [a.get("name", "").lower() for a in s.get("artists", [])]
+            artist_lower = artist.lower() if artist else ""
+
+            # Require: song title matches AND at least one artist matches
+            title_ok = sname.lower() == title.lower() or title.lower() in sname.lower()
+            artist_ok = not artist or any(artist_lower in a or a in artist_lower for a in sartist_list)
+
+            if title_ok and artist_ok:
+                # Prefer exact title match over substring
+                if sname.lower() == title.lower():
+                    return s.get("id")
+                best = s.get("id")
+
+            # Also try substring match on artist
+            if not best and title.lower() in sname.lower() and artist_ok:
+                best = s.get("id")
+
+        return best or songs[0].get("id")
+    except Exception as e:
+        log.debug(f"search netease error: {e}")
+    return None
+
+
+def _fetch_via_proxy(title, artist, headers):
+    """Try Netease Cloud Music via public API proxy."""
+    try:
+        proxy = "https://netease-cloud-music-api-eta.vercel.app"
+        r = requests.get(f"{proxy}/search", params={"keywords": f"{title} {artist}", "limit": 5}, timeout=25)
+        r.raise_for_status()
+        songs = (r.json().get("result", {}) or {}).get("songs", [])
+        if not songs:
+            log.debug(f"netease proxy: no search results for '{title} {artist}'")
+            return ""
+        sid = songs[0].get("id")
+        if not sid:
+            return ""
+        r2 = requests.get(f"{proxy}/lyric", params={"id": sid}, timeout=25)
+        r2.raise_for_status()
+        d = r2.json()
+        lrc = (d.get("lrc", {}) or {}).get("lyric", "")
+        if lrc and re.search(r'\[\d+:', lrc):
+            return lrc
+        log.debug(f"netease proxy: lyric empty for id={sid}, keys={list(d.keys())}")
+        return ""
+    except Exception as e:
+        log.debug(f"netease proxy error: {e}")
+        return ""
+
+
+def _fetch_via_direct(title, artist, headers):
+    """Try Netease Cloud Music via direct API (fallback)."""
+    try:
+        keyword = f"{title} {artist}" if artist else title
+        r = requests.get(
+            "https://music.163.com/api/search/get",
+            params={"s": keyword, "type": 1, "limit": 5},
+            headers=headers, timeout=6,
+        )
+        r.raise_for_status()
+        songs = (r.json().get("result", {}) or {}).get("songs", [])
+        if not songs:
+            return ""
+        sid = songs[0].get("id")
+        if not sid:
+            return ""
+        r2 = requests.get(
+            f"https://music.163.com/api/song/lyric?id={sid}&lv=1&kv=1&tv=-1",
+            headers=headers, timeout=6,
+        )
+        r2.raise_for_status()
+        d = r2.json()
+        lrc = (d.get("lrc", {}) or {}).get("lyric", "")
+        if lrc and re.search(r'\[\d+:', lrc):
+            return lrc
+        return ""
+    except Exception as e:
+        log.debug(f"netease direct error: {e}")
         return ""
     try:
         headers = {
@@ -288,7 +469,32 @@ def fetch_lrc_netease(title, artist):
         return ""
     except Exception as e:
         log.debug(f"fetch_lrc_netease error: {e}")
-        return ""
+
+    # Fallback: try the original Netease API directly
+    try:
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
+        keyword = f"{title} {artist}"
+        resp = requests.get(
+            "https://music.163.com/api/search/get",
+            params={"s": keyword, "type": 1, "limit": 5},
+            headers=headers, timeout=10,
+        )
+        songs = (resp.json().get("result", {}) or {}).get("songs", [])
+        if songs:
+            sid = songs[0].get("id")
+            if sid:
+                r2 = requests.get(
+                    f"https://music.163.com/api/song/lyric?id={sid}&lv=1&kv=1&tv=-1",
+                    headers=headers, timeout=10,
+                )
+                d = r2.json()
+                lrc = (d.get("lrc", {}) or {}).get("lyric", "")
+                if lrc and re.search(r'\[\d+:', lrc):
+                    return lrc
+    except Exception as e:
+        log.debug(f"fetch_lrc_netease fallback error: {e}")
+
+    return ""
 
 
 def parse_lrc(lrc_text):
@@ -365,6 +571,80 @@ def read_plasmoid_interval():
     return 300
 
 
+_SOURCE_MAP = ["both", "native", "lrclib", "netease", "lrclib_first", "netease_first"]
+
+
+def read_plasmoid_lyrics_source():
+    """Read lyricsSource from plasmoid's KConfig."""
+    try:
+        cfg = configparser.ConfigParser()
+        cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
+        cfg.read(cfgpath)
+
+        applet_id = None
+        for sec in cfg.sections():
+            if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
+                m = re.search(r"Applets\]\[(\d+)\]?$", sec)
+                if m:
+                    applet_id = m.group(1)
+                    break
+        if applet_id:
+            for sec in cfg.sections():
+                if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
+                    if cfg.has_option(sec, "lyricsSource"):
+                        return _SOURCE_MAP[int(cfg.get(sec, "lyricsSource"))]
+    except Exception:
+        pass
+    return "both"
+
+
+def fetch_lyrics(title, artist):
+    """Fetch lyrics based on configured source."""
+    if not title:
+        return ""
+    source = read_plasmoid_lyrics_source()
+    log.info(f"  Lyrics source: {source}")
+
+    if source == "lrclib":
+        return fetch_lrc(title, artist)
+    if source == "netease":
+        return fetch_lrc_netease(title, artist)
+    if source == "native":
+        return ""  # handled by real-time lyric page reading
+
+    if source == "lrclib_first":
+        lrc = fetch_lrc(title, artist)
+        if lrc:
+            return lrc
+        return fetch_lrc_netease(title, artist)
+
+    if source == "netease_first":
+        lrc = fetch_lrc_netease(title, artist)
+        if lrc:
+            return lrc
+        return fetch_lrc(title, artist)
+
+    # "both" - parallel
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {
+            pool.submit(fetch_lrc, title, artist): "lrclib",
+            pool.submit(fetch_lrc_netease, title, artist): "netease",
+        }
+        for fut in as_completed(futures):
+            try:
+                result = fut.result()
+                if result:
+                    log.info(f"  {futures[fut]}: lyrics found")
+                    for f in futures:
+                        if not f.done():
+                            f.cancel()
+                    return result
+                log.info(f"  {futures[fut]}: no lyrics")
+            except Exception as e:
+                log.debug(f"  {futures[fut]} error: {e}")
+    return ""
+
+
 # ─── Main loop ────────────────────────────────────────────────────────────
 
 class LyricsBridge:
@@ -379,6 +659,81 @@ class LyricsBridge:
         self.playing = False
         self.last_position_fetch = 0
         self._ws = None
+        self._lyric_ws = None
+
+    def _connect_lyric_ws(self):
+        """Open WS connection to lyric.html for real-time lyrics."""
+        self._close_lyric_ws()
+        try:
+            resp = requests.get(f"http://127.0.0.1:{self.port}/json", timeout=3)
+            for page in resp.json():
+                if page.get("type") == "page" and "lyric.html" in page.get("url", ""):
+                    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=5)
+                    cdp_call(ws, "Runtime.enable")
+                    time.sleep(0.1); ws.settimeout(0.3)
+                    while True:
+                        try:
+                            ws.recv()
+                        except Exception:
+                            break
+                    self._lyric_ws = ws
+                    return True
+        except Exception:
+            pass
+        self._lyric_ws = None
+        return False
+
+    def _read_lyric_line(self):
+        """Read current lyric line from lyric.html."""
+        ws = self._lyric_ws
+        if not ws:
+            return ""
+        try:
+            result = cdp_call(ws, "Runtime.evaluate", {
+                "expression": "(function(){var p=document.body?document.body.innerText.trim():'';var lines=p.split('\\n');for(var i=0;i<lines.length;i++){var t=lines[i].trim();if(t.length>2)return t}return p.substring(0,80)})()",
+                "returnByValue": True,
+            })
+            return result.get("result", {}).get("value", "")
+        except Exception:
+            self._close_lyric_ws()
+            return ""
+
+    def _close_lyric_ws(self):
+        if self._lyric_ws:
+            try:
+                self._lyric_ws.close()
+            except Exception:
+                pass
+            self._lyric_ws = None
+
+    def _check_clear_cache(self):
+        """Check if clearCache flag is set in plasmoid config."""
+        try:
+            cfg = configparser.ConfigParser()
+            cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
+            cfg.read(cfgpath)
+            applet_id = None
+            for sec in cfg.sections():
+                if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
+                    m = re.search(r"Applets\]\[(\d+)\]?$", sec)
+                    if m:
+                        applet_id = m.group(1)
+                        break
+            if applet_id:
+                for sec in cfg.sections():
+                    if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
+                        if cfg.has_option(sec, "clearCache") and cfg.getboolean(sec, "clearCache"):
+                            log.info("Clearing lyrics cache...")
+                            for f in os.listdir(CACHE_DIR):
+                                if f.endswith(".lrc") or f.endswith(".id"):
+                                    os.remove(os.path.join(CACHE_DIR, f))
+                            cfg.set(sec, "clearCache", "false")
+                            with open(cfgpath, "w") as f:
+                                cfg.write(f)
+                            log.info(f"Cache cleared ({CACHE_DIR})")
+                        break
+        except Exception as e:
+            log.debug(f"clear cache error: {e}")
 
     def _connect_cdp(self):
         """Open or reopen CDP WebSocket connection."""
@@ -473,6 +828,38 @@ class LyricsBridge:
                 else:
                     info["title"] = meta_val
 
+            # Album name (look near the player area for better search matching)
+            result = cdp_call(ws, "Runtime.evaluate", {
+                "expression": """
+                    (function() {
+                        var text = document.body ? document.body.innerText : '';
+                        var m = text.match(/[\\u4e00-\\u9fff]+《[^》]+》/);
+                        return m ? m[0] : '';
+                    })()
+                """,
+                "returnByValue": True,
+            })
+            info["album"] = result.get("result", {}).get("value", "")
+
+            # Album name (look near the player area)
+            result = cdp_call(ws, "Runtime.evaluate", {
+                "expression": """
+                    (function() {
+                        var el = document.querySelector('.player_cont');
+                        if (!el) return '';
+                        var body = document.body ? document.body.innerText : '';
+                        var idx = body.indexOf(el.innerText.substring(0, 20));
+                        if (idx < 0) return '';
+                        // Search around current song for album pattern
+                        var area = body.substring(Math.max(0, idx - 200), idx + 50);
+                        var m = area.match(/[\\u4e00-\\u9fff]+《[^》]+》/);
+                        return m ? m[0] : '';
+                    })()
+                """,
+                "returnByValue": True,
+            })
+            info["album"] = result.get("result", {}).get("value", "")
+
             return info
         except Exception as e:
             log.debug(f"extract error: {e}")
@@ -485,27 +872,53 @@ class LyricsBridge:
 
         while not _stop.is_set():
             try:
+                self._check_clear_cache()
                 # Ensure CDP connection
                 if not self._ws:
                     if not self._connect_cdp():
-                        write_lyrics("No song detected")
-                        _stop.wait(1)
+                        if not self.current_title:
+                            write_lyrics("No song detected")
+                        _stop.wait(0.3)
                         continue
+
+                # Ensure lyric page connection (only for native source)
+                source = read_plasmoid_lyrics_source()
+                if source == "native" and not self._lyric_ws:
+                    self._connect_lyric_ws()
 
                 song = self._extract()
                 if song and song.get("title"):
                     self._handle_song(song)
-                else:
+                    # Real-time lyric from QQ Music's own page (native mode only)
+                    if source == "native":
+                        line = self._read_lyric_line()
+                        if line and self.current_title:
+                            write_lyrics(line)
+                            write_meta({
+                                "title": self.current_title,
+                                "artist": self.current_artist,
+                                "position": self.position,
+                                "duration": 0, "playing": True,
+                            "total_lines": 1,
+                        })
+                elif not self.current_title:
                     write_lyrics("No song detected")
-                    _stop.wait(1)
+                    _stop.wait(0.3)
+                else:
+                    # Already showing a song, just retry faster
+                    _stop.wait(0.3)
             except Exception as e:
                 log.error(f"Error: {e}")
                 self._close_ws()
-                _stop.wait(1)
+                _stop.wait(0.3)
 
     def _handle_song(self, song):
+        global _current_album
         title = song.get("title", "")
         artist = song.get("artist", "")
+        album = song.get("album", "")
+        if album:
+            _current_album = album
         position = song.get("position", 0)
         playing = song.get("playing", False)
         duration = song.get("duration", 0)
@@ -519,41 +932,19 @@ class LyricsBridge:
             self.parsed_lrc = []
             self.song_start_time = time.time() - position
 
-            # Write fallback immediately (new song title)
-            write_lyrics(f"{artist} - {title}")
-            write_meta({
-                "title": title, "artist": artist,
-                "position": position, "duration": duration,
-                "playing": playing, "total_lines": 0,
-            })
+            # Write fallback immediately (new song title) — skip for native mode
+            source = read_plasmoid_lyrics_source()
+            if source != "native":
+                write_lyrics(f"{artist} - {title}")
+                write_meta({
+                    "title": title, "artist": artist,
+                    "position": position, "duration": duration,
+                    "playing": playing, "total_lines": 0,
+                })
 
-            # Fetch lyrics from both sources in parallel (background)
-            lrc = ""
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                futures = {
-                    pool.submit(fetch_lrc, title, artist): "lrclib",
-                    pool.submit(fetch_lrc_netease, title, artist): "netease",
-                }
-                for fut in as_completed(futures):
-                    source = futures[fut]
-                    try:
-                        result = fut.result()
-                        if result:
-                            log.info(f"  {source}: lyrics found")
-                            lrc = result
-                            for f in futures:
-                                if not f.done():
-                                    f.cancel()
-                            break
-                        else:
-                            log.info(f"  {source}: no lyrics")
-                    except Exception as e:
-                        log.debug(f"  {source} error: {e}")
-            if lrc:
-                self.parsed_lrc = parse_lrc(lrc)
-                log.info(f"  Lyrics: {len(self.parsed_lrc)} lines")
-            else:
-                log.info("  No lyrics found")
+            # Background lyrics fetch (don't block the main loop)
+            threading.Thread(target=self._fetch_lyrics_async,
+                             args=(title, artist, album), daemon=True).start()
 
         self.playing = playing
 
@@ -565,24 +956,39 @@ class LyricsBridge:
         else:
             self.position = max(0, self.position)
 
-        # Write current line
-        line = get_current_line(self.parsed_lrc, self.position)
-        if not line:
-            if self.current_title:
-                line = f"{self.current_artist} - {self.current_title}"
-            else:
-                line = "No lyrics"
-        write_lyrics(line)
+        # Skip final writes in native mode (lyric.html takes over)
+        source = read_plasmoid_lyrics_source()
+        if source != "native":
+            line = get_current_line(self.parsed_lrc, self.position)
+            if not line:
+                line = f"{self.current_artist} - {self.current_title}" if self.current_title else "No lyrics"
+            write_lyrics(line)
+            write_meta({
+                "title": self.current_title,
+                "artist": self.current_artist,
+                "position": self.position,
+                "duration": duration,
+                "playing": self.playing,
+                "total_lines": len(self.parsed_lrc),
+            })
 
-        # Write meta (for plasmoid debugging/config)
-        write_meta({
-            "title": self.current_title,
-            "artist": self.current_artist,
-            "position": self.position,
-            "duration": duration,
-            "playing": self.playing,
-            "total_lines": len(self.parsed_lrc),
-        })
+    def _fetch_lyrics_async(self, title, artist, album=""):
+        """Background lyrics fetch. Updates parsed_lrc when done."""
+        lrc = read_cache(title, artist)
+        if lrc:
+            log.info("  Cache hit")
+            if self.current_title == title and self.current_artist == artist:
+                self.parsed_lrc = parse_lrc(lrc)
+                log.info(f"  Lyrics: {len(self.parsed_lrc)} lines")
+            return
+        lrc = fetch_lyrics(title, artist)
+        if lrc:
+            write_cache(title, artist, lrc)
+            if self.current_title == title and self.current_artist == artist:
+                self.parsed_lrc = parse_lrc(lrc)
+                log.info(f"  Lyrics: {len(self.parsed_lrc)} lines")
+        else:
+            log.info("  No lyrics found")
 
         _stop.wait(self.interval / 1000.0)
 
