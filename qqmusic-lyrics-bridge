@@ -1009,14 +1009,16 @@ class LyricsBridge:
         song_id = f"{artist} - {title}"
         if song_id != f"{self.current_artist} - {self.current_title}":
             if self._recorded_lrc and self.current_title and len(self._recorded_lrc) >= 3:
-                lrc_text = ""
-                for ts, line in self._recorded_lrc:
-                    mins = int(ts // 60)
-                    secs = ts % 60
-                    lrc_text += f"[{mins:02d}:{secs:05.2f}]{line}\n"
-                if lrc_text:
-                    write_cache(self.current_title, self.current_artist, lrc_text)
-                    log.info(f"  Saved recorded LRC: {len(self._recorded_lrc)} lines")
+                existing = read_cache(self.current_title, self.current_artist)
+                if not existing:
+                    lrc_text = ""
+                    for ts, line in self._recorded_lrc:
+                        mins = int(ts // 60)
+                        secs = ts % 60
+                        lrc_text += f"[{mins:02d}:{secs:05.2f}]{line}\n"
+                    if lrc_text:
+                        write_cache(self.current_title, self.current_artist, lrc_text)
+                        log.info(f"  Saved recorded LRC: {len(self._recorded_lrc)} lines")
             self._recorded_lrc = []
             log.info(f"Now playing: {artist} - {title}")
             self.current_title = title
