@@ -15,6 +15,7 @@ KCM.SimpleKCM {
     property alias cfg_lyricsSource: sourceCombo.currentIndex
     property alias cfg_playerType: playerCombo.currentIndex
     property alias cfg_displayMode: displayModeCombo.currentIndex
+    property alias cfg_proxyUrl: proxyField.text
 
     Kirigami.FormLayout {
         QQC2.Label { text: "刷新"; font.bold: true; topPadding: 8; bottomPadding: 4 }
@@ -53,6 +54,13 @@ KCM.SimpleKCM {
             id: displayModeCombo; Kirigami.FormData.label: "显示模式"
             model: ["单行歌词", "三行歌词+进度条", "两行·当前在上", "两行·当前在下"]
             Component.onCompleted: currentIndex = Number(Plasmoid.configuration.displayMode)
+        }
+        Kirigami.Separator { Kirigami.FormData.isSection: true }
+
+        QQC2.Label { text: "网络"; font.bold: true; topPadding: 8; bottomPadding: 4 }
+        QQC2.TextField {
+            id: proxyField; Kirigami.FormData.label: "HTTP 代理"
+            placeholderText: "http://127.0.0.1:7890"
         }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 

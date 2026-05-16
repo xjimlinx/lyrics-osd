@@ -93,7 +93,7 @@ _stop = threading.Event()
 
 def get_ws_url(port):
     try:
-        resp = requests.get(f"http://127.0.0.1:{port}/json", timeout=3)
+        resp = _HTTP.get(f"http://127.0.0.1:{port}/json", timeout=3)
         # Prefer index.html (main player page with song info)
         for page in resp.json():
             if page.get("type") == "page" and "index.html" in page.get("url", ""):
@@ -254,13 +254,17 @@ def fetch_lrc(title, artist):
         params = {"track_name": title}
         if artist:
             params["artist_name"] = artist
-        resp = requests.get(
+        resp = _HTTP.get(
             "https://lrclib.net/api/search",
             params=params,
-            timeout=10,
+            timeout=15,
         )
         resp.raise_for_status()
-        tracks = resp.json()
+        data = resp.text
+        if not data:
+            log.debug("  lrclib: empty response")
+            return ""
+        tracks = json.loads(data)
         for t in tracks:
             lrc = (t.get("syncedLyrics") or "").strip()
             if lrc and re.search(r'\[\d+:', lrc):
@@ -288,10 +292,10 @@ def fetch_lrc_netease(title, artist, album=""):
         sid = _search_netease_id(title, artist, album or _current_album)
     if sid:
         try:
-            r = requests.get(
+            r = _HTTP.get(
                 "https://api.injahow.cn/meting/",
                 params={"type": "lrc", "server": "netease", "id": sid},
-                timeout=10,
+            timeout=15,
             )
             r.raise_for_status()
             lrc = r.text.strip()
@@ -315,7 +319,7 @@ def _search_netease_id(title, artist, album=""):
     """Search Netease and return the best matching song ID."""
     try:
         keyword = f"{title} {artist} {album}" if album else f"{title} {artist}"
-        r = requests.get(
+        r = _HTTP.get(
             "https://music.163.com/api/search/get",
             params={"s": keyword, "type": 1, "limit": 10},
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"},
@@ -356,7 +360,7 @@ def _fetch_via_proxy(title, artist, headers):
     """Try Netease Cloud Music via public API proxy."""
     try:
         proxy = "https://netease-cloud-music-api-eta.vercel.app"
-        r = requests.get(f"{proxy}/search", params={"keywords": f"{title} {artist}", "limit": 5}, timeout=25)
+        r = _HTTP.get(f"{proxy}/search", params={"keywords": f"{title} {artist}", "limit": 5}, timeout=25)
         r.raise_for_status()
         songs = (r.json().get("result", {}) or {}).get("songs", [])
         if not songs:
@@ -365,7 +369,7 @@ def _fetch_via_proxy(title, artist, headers):
         sid = songs[0].get("id")
         if not sid:
             return ""
-        r2 = requests.get(f"{proxy}/lyric", params={"id": sid}, timeout=25)
+        r2 = _HTTP.get(f"{proxy}/lyric", params={"id": sid}, timeout=25)
         r2.raise_for_status()
         d = r2.json()
         lrc = (d.get("lrc", {}) or {}).get("lyric", "")
@@ -382,7 +386,7 @@ def _fetch_via_direct(title, artist, headers):
     """Try Netease Cloud Music via direct API (fallback)."""
     try:
         keyword = f"{title} {artist}" if artist else title
-        r = requests.get(
+        r = _HTTP.get(
             "https://music.163.com/api/search/get",
             params={"s": keyword, "type": 1, "limit": 5},
             headers=headers, timeout=6,
@@ -394,7 +398,7 @@ def _fetch_via_direct(title, artist, headers):
         sid = songs[0].get("id")
         if not sid:
             return ""
-        r2 = requests.get(
+        r2 = _HTTP.get(
             f"https://music.163.com/api/song/lyric?id={sid}&lv=1&kv=1&tv=-1",
             headers=headers, timeout=6,
         )
@@ -416,7 +420,7 @@ def _fetch_via_direct(title, artist, headers):
         keyword = title
         if artist:
             keyword = f"{title} {artist}"
-        resp = requests.get(
+        resp = _HTTP.get(
             "https://music.163.com/api/search/get",
             params={"s": keyword, "type": 1, "limit": 5},
             headers=headers,
@@ -451,7 +455,7 @@ def _fetch_via_direct(title, artist, headers):
             return ""
 
         # Step 3: Fetch lyrics
-        resp2 = requests.get(
+        resp2 = _HTTP.get(
             "https://music.163.com/api/song/lyric",
             params={"id": best_id, "lv": 1, "kv": 1, "tv": -1},
             headers=headers,
@@ -474,7 +478,7 @@ def _fetch_via_direct(title, artist, headers):
     try:
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
         keyword = f"{title} {artist}"
-        resp = requests.get(
+        resp = _HTTP.get(
             "https://music.163.com/api/search/get",
             params={"s": keyword, "type": 1, "limit": 5},
             headers=headers, timeout=10,
@@ -483,7 +487,7 @@ def _fetch_via_direct(title, artist, headers):
         if songs:
             sid = songs[0].get("id")
             if sid:
-                r2 = requests.get(
+                r2 = _HTTP.get(
                     f"https://music.163.com/api/song/lyric?id={sid}&lv=1&kv=1&tv=-1",
                     headers=headers, timeout=10,
                 )
@@ -621,6 +625,40 @@ def read_plasmoid_player_type():
     return 0
 
 
+_HTTP = requests.Session()
+
+
+def _setup_proxy():
+    """Read proxy URL from plasmoid config and configure HTTP session."""
+    global _HTTP
+    try:
+        cfg = configparser.ConfigParser()
+        cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
+        cfg.read(cfgpath)
+        applet_id = None
+        for sec in cfg.sections():
+            if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
+                m = re.search(r"Applets\]\[(\d+)\]?$", sec)
+                if m:
+                    applet_id = m.group(1)
+                    break
+        if applet_id:
+            for sec in cfg.sections():
+                if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
+                    if cfg.has_option(sec, "proxyUrl") and cfg.get(sec, "proxyUrl"):
+                        url = cfg.get(sec, "proxyUrl").strip()
+                        _HTTP = requests.Session()
+                        _HTTP.proxies = {"http": url, "https": url}
+                        log.info(f"Proxy set: {url}")
+                        return
+    except Exception:
+        pass
+    _HTTP = requests.Session()
+
+
+_setup_proxy()
+
+
 def fetch_lyrics(title, artist):
     """Fetch lyrics based on configured source."""
     if not title:
@@ -688,7 +726,7 @@ class LyricsBridge:
         """Open WS connection to lyric.html for real-time lyrics."""
         self._close_lyric_ws()
         try:
-            resp = requests.get(f"http://127.0.0.1:{self.port}/json", timeout=3)
+            resp = _HTTP.get(f"http://127.0.0.1:{self.port}/json", timeout=3)
             for page in resp.json():
                 if page.get("type") == "page" and "lyric.html" in page.get("url", ""):
                     ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=5)
