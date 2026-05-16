@@ -1,0 +1,474 @@
+#!/home/xein/anaconda3/bin/python3
+"""
+QQ Music Lyrics Bridge
+Connects to QQ Music via Chrome DevTools Protocol, extracts playback info,
+fetches synced lyrics from lrclib.net, and writes the current lyric line
+to /tmp/lyrics-current.txt for a plasmoid to display.
+
+Usage:
+  ./qqmusic-lyrics-bridge [--debug-port PORT]
+"""
+
+import json
+import os
+import time
+import re
+import argparse
+import logging
+import threading
+import configparser
+import requests
+import websocket
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("qqmusic-lyrics")
+
+DEBUG_PORT = 9223
+LYRICS_FILE = "/tmp/lyrics-current.txt"
+META_FILE = "/tmp/lyrics-meta.json"
+
+_stop = threading.Event()
+
+
+# ─── CDP helpers ──────────────────────────────────────────────────────────
+
+def get_ws_url(port):
+    try:
+        resp = requests.get(f"http://127.0.0.1:{port}/json", timeout=3)
+        # Prefer index.html (main player page with song info)
+        for page in resp.json():
+            if page.get("type") == "page" and "index.html" in page.get("url", ""):
+                return page["webSocketDebuggerUrl"]
+        # Fallback: any page
+        for page in resp.json():
+            if page.get("type") == "page":
+                return page["webSocketDebuggerUrl"]
+    except Exception:
+        pass
+    return None
+
+
+def cdp_call(ws, method, params=None):
+    """Send a CDP command and wait for a result. Ignores non-matching events."""
+    msg_id = int(time.time() * 1000) % 100000
+    msg = json.dumps({
+        "id": msg_id,
+        "method": method,
+        "params": params or {},
+    })
+    ws.send(msg)
+    ws.settimeout(5)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            raw = ws.recv()
+        except (websocket.WebSocketTimeoutException, OSError):
+            break
+        except Exception:
+            continue
+        try:
+            resp = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if resp.get("id") == msg_id:
+            return resp.get("result", {})
+    return {}
+
+
+def cdp_send_only(ws, method, params=None):
+    ws.send(json.dumps({
+        "id": int(time.time() * 1000) % 100000,
+        "method": method,
+        "params": params or {},
+    }))
+
+
+# ─── Song extraction ─────────────────────────────────────────────────────
+
+def extract_song(port):
+    """Get current song info + playback state from QQ Music via CDP."""
+    ws_url = get_ws_url(port)
+    if not ws_url:
+        return None
+    try:
+        ws = websocket.create_connection(ws_url, timeout=5)
+    except Exception:
+        return None
+
+    info = {"title": "", "artist": "", "position": 0, "duration": 0, "playing": False}
+
+    try:
+        # Enable Runtime (must wait for response, don't skip it)
+        cdp_call(ws, "Runtime.enable")
+        time.sleep(0.1)
+
+        # Flush any pending console events by reading with short timeout
+        ws.settimeout(0.3)
+        flushed = 0
+        while flushed < 50:
+            try:
+                raw = ws.recv()
+                flushed += 1
+            except Exception:
+                break
+
+        # Get audio position/duration/paused from audio elements
+        result = cdp_call(ws, "Runtime.evaluate", {
+            "expression": """
+                (function() {
+                    var audios = document.querySelectorAll('audio');
+                    for (var i = 0; i < audios.length; i++) {
+                        if (audios[i].duration > 0) {
+                            return JSON.stringify({
+                                currentTime: audios[i].currentTime,
+                                duration: audios[i].duration,
+                                paused: audios[i].paused
+                            });
+                        }
+                    }
+                    return '';
+                })()
+            """,
+            "returnByValue": True,
+        })
+        audio_data = result.get("result", {}).get("value", "")
+        if audio_data:
+            try:
+                ad = json.loads(audio_data)
+                info["position"] = ad.get("currentTime", 0)
+                info["duration"] = ad.get("duration", 0)
+                info["playing"] = not ad.get("paused", True)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Get song title/artist from QQ Music's .player_cont element
+        # Format: "song_name -artist_name HH:MM/HH:MM"
+        result = cdp_call(ws, "Runtime.evaluate", {
+            "expression": """
+                (function() {
+                    var el = document.querySelector('.player_cont');
+                    if (!el) return '';
+                    var text = (el.innerText || el.textContent || '').trim();
+                    // Remove time patterns like "02:10/02:53"
+                    text = text.replace(/\\d{1,2}:\\d{2}\\/\\d{1,2}:\\d{2}/g, '').trim();
+                    // Remove trailing digits (playlist count like "59")
+                    text = text.replace(/\\s+\\d+$/, '').trim();
+                    // Check for "song -artist" pattern
+                    if (text.includes('-') && text.length > 3 && text.length < 120) {
+                        return text;
+                    }
+                    return '';
+                })()
+            """,
+            "returnByValue": True,
+        })
+        meta_val = result.get("result", {}).get("value", "")
+        if meta_val:
+            title = meta_val.strip()
+            # Parse "song -artist" using LAST occurrence of " -"
+            # e.g. "Merry Christmas Mr. Lawrence - FYI -Utada" -> song + artist
+            if " -" in title:
+                parts = title.rsplit(" -", 1)
+                info["title"] = parts[0].strip()
+                info["artist"] = parts[1].strip()
+            else:
+                info["title"] = title
+
+        return info
+    except Exception as e:
+        log.debug(f"extract_song error: {e}")
+        return None
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
+# ─── Lyrics fetching ─────────────────────────────────────────────────────
+
+def fetch_lrc(title, artist):
+    """Fetch synced LRC from lrclib.net."""
+    if not title:
+        return ""
+    try:
+        params = {"track_name": title}
+        if artist:
+            params["artist_name"] = artist
+        resp = requests.get(
+            "https://lrclib.net/api/search",
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        tracks = resp.json()
+        for t in tracks:
+            lrc = (t.get("syncedLyrics") or "").strip()
+            if lrc and re.search(r'\[\d+:', lrc):
+                return lrc
+        # Fallback: plain lyrics
+        for t in tracks:
+            lrc = (t.get("plainLyrics") or "").strip()
+            if lrc:
+                return lrc
+        return ""
+    except Exception as e:
+        log.debug(f"fetch_lrc error: {e}")
+        return ""
+
+
+def fetch_lrc_netease(title, artist):
+    """Fetch synced LRC from Netease Cloud Music."""
+    if not title:
+        return ""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+            "Referer": "https://music.163.com/",
+        }
+        # Step 1: Search
+        keyword = title
+        if artist:
+            keyword = f"{title} {artist}"
+        resp = requests.get(
+            "https://music.163.com/api/search/get",
+            params={"s": keyword, "type": 1, "limit": 5},
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        songs = (data.get("result", {}) or {}).get("songs", [])
+        if not songs:
+            return ""
+
+        # Step 2: Find best match and get lyrics
+        best_id = None
+        for song in songs:
+            sid = song.get("id")
+            if not sid:
+                continue
+            sname = song.get("name", "")
+            sartists = [a.get("name", "") for a in song.get("artists", [])]
+            sartist = ", ".join(sartists)
+            # Fuzzy match
+            if title.lower() in sname.lower() or sname.lower() in title.lower():
+                best_id = sid
+                break
+            if artist and any(artist.lower() in a.lower() for a in sartists):
+                best_id = sid
+                break
+        if not best_id:
+            best_id = songs[0].get("id")
+
+        if not best_id:
+            return ""
+
+        # Step 3: Fetch lyrics
+        resp2 = requests.get(
+            "https://music.163.com/api/song/lyric",
+            params={"id": best_id, "lv": 1, "kv": 1, "tv": -1},
+            headers=headers,
+            timeout=10,
+        )
+        resp2.raise_for_status()
+        lyric_data = resp2.json()
+        lrc = (lyric_data.get("lrc", {}) or {}).get("lyric", "")
+        if lrc and re.search(r'\[\d+:', lrc):
+            return lrc
+        # Try translated lyrics as fallback
+        tlyric = (lyric_data.get("tlyric", {}) or {}).get("lyric", "")
+        if tlyric and re.search(r'\[\d+:', tlyric):
+            return tlyric
+        return ""
+    except Exception as e:
+        log.debug(f"fetch_lrc_netease error: {e}")
+        return ""
+
+
+def parse_lrc(lrc_text):
+    """Parse LRC format: [mm:ss.xx]text -> [(time_sec, text), ...] sorted."""
+    lines = []
+    pattern = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\](.*)")
+    for line in lrc_text.strip().split("\n"):
+        m = pattern.match(line)
+        if m:
+            mins = int(m.group(1))
+            secs = float(m.group(2))
+            text = m.group(3).strip()
+            if text:
+                lines.append((mins * 60 + secs, text))
+    lines.sort()
+    return lines
+
+
+def get_current_line(parsed_lrc, position):
+    """Return the last line with timestamp <= position, or first line."""
+    if not parsed_lrc:
+        return ""
+    current = parsed_lrc[0][1]
+    for ts, text in parsed_lrc:
+        if ts <= position:
+            current = text
+        else:
+            break
+    return current
+
+
+# ─── Write output ─────────────────────────────────────────────────────────
+
+def write_lyrics(text):
+    """Atomically write current lyric to the output file."""
+    tmp = LYRICS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.rename(tmp, LYRICS_FILE)
+
+
+def write_meta(info):
+    with open(META_FILE, "w") as f:
+        json.dump(info, f, ensure_ascii=False)
+
+
+# ─── Shared config ────────────────────────────────────────────────────────
+
+def read_plasmoid_interval():
+    """Read refreshInterval from plasmoid's KConfig (if available)."""
+    try:
+        cfg = configparser.ConfigParser()
+        cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
+        cfg.read(cfgpath)
+
+        # Step 1: find applet ID by plugin name
+        applet_id = None
+        for sec in cfg.sections():
+            if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
+                # Extract applet ID from section e.g. "Containments][172][Applets][329"
+                m = re.search(r"Applets\]\[(\d+)\]?$", sec)
+                if m:
+                    applet_id = m.group(1)
+                    break
+
+        # Step 2: find Configuration/General section for that applet
+        if applet_id:
+            for sec in cfg.sections():
+                if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
+                    if cfg.has_option(sec, "refreshInterval"):
+                        return int(cfg.get(sec, "refreshInterval"))
+    except Exception:
+        pass
+    return 300
+
+
+# ─── Main loop ────────────────────────────────────────────────────────────
+
+class LyricsBridge:
+    def __init__(self, port, interval=None):
+        self.port = port
+        self.interval = interval or read_plasmoid_interval()
+        self.current_title = ""
+        self.current_artist = ""
+        self.parsed_lrc = []
+        self.song_start_time = 0  # local epoch when song started
+        self.position = 0
+        self.playing = False
+        self.last_position_fetch = 0
+
+    def run(self):
+        log.info(f"Lyrics bridge started (CDP port: {self.port}, interval: {self.interval}ms)")
+        log.info(f"Writing to: {LYRICS_FILE}")
+        log.info("Waiting for QQ Music to connect...")
+
+        while not _stop.is_set():
+            try:
+                song = extract_song(self.port)
+                if song and song.get("title"):
+                    self._handle_song(song)
+                else:
+                    write_lyrics("No song detected")
+                    time.sleep(2)
+            except Exception as e:
+                log.error(f"Error: {e}")
+                time.sleep(2)
+
+    def _handle_song(self, song):
+        title = song.get("title", "")
+        artist = song.get("artist", "")
+        position = song.get("position", 0)
+        playing = song.get("playing", False)
+        duration = song.get("duration", 0)
+
+        # Check if song changed
+        song_id = f"{artist} - {title}"
+        if song_id != f"{self.current_artist} - {self.current_title}":
+            log.info(f"Now playing: {artist} - {title}")
+            self.current_title = title
+            self.current_artist = artist
+            self.parsed_lrc = []
+            self.song_start_time = time.time() - position
+
+            # Fetch lyrics from multiple sources
+            lrc = fetch_lrc(title, artist)
+            if not lrc:
+                log.info("  lrclib: no lyrics, trying Netease...")
+                lrc = fetch_lrc_netease(title, artist)
+            if lrc:
+                self.parsed_lrc = parse_lrc(lrc)
+                log.info(f"  Lyrics: {len(self.parsed_lrc)} lines")
+            else:
+                log.info("  No lyrics found")
+
+        self.playing = playing
+
+        # Get position: prefer CDP audio element, else infer from start time
+        if playing and position > 0:
+            self.position = position
+        elif playing:
+            self.position = time.time() - self.song_start_time
+        else:
+            self.position = max(0, self.position)
+
+        # Write current line
+        line = get_current_line(self.parsed_lrc, self.position)
+        if not line:
+            if self.current_title:
+                line = f"{self.current_artist} - {self.current_title}"
+            else:
+                line = "No lyrics"
+        write_lyrics(line)
+
+        # Write meta (for plasmoid debugging/config)
+        write_meta({
+            "title": self.current_title,
+            "artist": self.current_artist,
+            "position": self.position,
+            "duration": duration,
+            "playing": self.playing,
+            "total_lines": len(self.parsed_lrc),
+        })
+
+        _stop.wait(self.interval / 1000.0)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="QQ Music Lyrics Bridge")
+    parser.add_argument("--debug-port", type=int, default=DEBUG_PORT)
+    parser.add_argument("--interval", type=int, default=None,
+                        help="Poll interval in ms (default: read from plasmoid config or 300)")
+    args = parser.parse_args()
+
+    bridge = LyricsBridge(args.debug_port, interval=args.interval)
+    try:
+        bridge.run()
+    except KeyboardInterrupt:
+        log.info("Shutting down...")
+        _stop.set()
+        write_lyrics("")
+
+
+if __name__ == "__main__":
+    main()

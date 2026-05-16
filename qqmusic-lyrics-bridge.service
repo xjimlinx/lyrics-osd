@@ -1,0 +1,13 @@
+[Unit]
+Description=QQ Music Lyrics Bridge
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/xein/CODE/Tools/lyrics-osd/qqmusic-lyrics-bridge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,14 @@
+{
+    "KPlugin": {
+        "Id": "com.github.xein.lyrics-osd",
+        "Name": "Lyrics OSD",
+        "Description": "Display synced lyrics from QQ Music on the KDE panel",
+        "Category": "Multimedia",
+        "Icon": "view-media-lyrics",
+        "Version": "1.0",
+        "License": "MIT",
+        "Authors": [{"Name": "xein"}]
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "KPackageStructure": "Plasma/Applet"
+}
