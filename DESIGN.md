@@ -58,3 +58,12 @@ KConfig XT 格式，存储在 `~/.config/plasma-org.kde.plasma.desktop-appletsrc
 ## 环境变量
 
 - `QML_XHR_ALLOW_FILE_READ=1` — 允许 QML 通过 XMLHttpRequest 读取本地文件
+
+## 系统依赖
+
+- `qqmusic-lyrics-bridge.service` — systemd 用户服务，确保桥接守护进程在登录后自动启动
+- `~/.config/plasma-workspace/env/lyrics-osd.sh` — 设置 plasmashell 的环境变量
+  
+  ```
+  export QML_XHR_ALLOW_FILE_READ=1
+  ```
