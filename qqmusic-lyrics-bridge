@@ -714,6 +714,7 @@ class LyricsBridge:
         self.interval = interval or read_plasmoid_interval()
         self.current_title = ""
         self.current_artist = ""
+        self.current_duration = 0
         self.parsed_lrc = []
         self.song_start_time = 0
         self.position = 0
@@ -973,13 +974,13 @@ class LyricsBridge:
                                 "title": self.current_title,
                                 "artist": self.current_artist,
                                 "position": self.position,
-                                "duration": 0, "playing": True,
+                                "duration": self.current_duration, "playing": True,
                                 "total_lines": 1,
                                 "current_line": line,
                                 "prev_line": "",
                                 "next_line": "",
                                 "current_idx": 0,
-                                "progress": 0,
+                                "progress": round(self.position / self.current_duration, 3) if self.current_duration > 0 else 0,
                             })
                 elif not self.current_title:
                     write_lyrics("No song detected")
@@ -1002,6 +1003,7 @@ class LyricsBridge:
         position = song.get("position", 0)
         playing = song.get("playing", False)
         duration = song.get("duration", 0)
+        self.current_duration = duration if duration > 0 else self.current_duration
 
         # Save recorded LRC from native mode when song changes
         song_id = f"{artist} - {title}"
