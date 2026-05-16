@@ -972,10 +972,12 @@ class LyricsBridge:
                             write_lyrics(line)
                             # Record lyric line for LRC generation (native mode)
                             if not self._recorded_lrc or self._recorded_lrc[-1][1] != line:
-                                # Skip lines that look like next song metadata (short, contains " - ", not our song)
-                                if not (len(line) < 40 and " - " in line and
-                                        self.current_title not in line and
-                                        self.current_artist not in line):
+                                # If line looks like a different song's metadata, force re-extract
+                                if (len(line) < 40 and " - " in line and
+                                    self.current_title not in line and
+                                    self.current_artist not in line):
+                                    self.current_title = ""  # force song re-detection
+                                else:
                                     self._recorded_lrc.append((self.position, line))
                             write_meta({
                                 "title": self.current_title,
@@ -1016,11 +1018,6 @@ class LyricsBridge:
         song_id = f"{artist} - {title}"
         if song_id != f"{self.current_artist} - {self.current_title}":
             if self._recorded_lrc and self.current_title and len(self._recorded_lrc) >= 3:
-                # Remove trailing lines that look like next song's metadata
-                while self._recorded_lrc and (" - " in self._recorded_lrc[-1][1]
-                       and title.lower() not in self._recorded_lrc[-1][1].lower()
-                       and artist.lower() not in self._recorded_lrc[-1][1].lower()):
-                    self._recorded_lrc.pop()
                 existing = read_cache(self.current_title, self.current_artist)
                 if not existing:
                     lrc_text = ""
