@@ -1053,9 +1053,9 @@ class LyricsBridge:
         else:
             self.position = max(0, self.position)
 
-        # Skip final writes in native mode (lyric.html takes over)
+        # Skip final writes in native mode if no cached LRC
         source = read_plasmoid_lyrics_source()
-        if source != "native":
+        if source != "native" or self.parsed_lrc:
             line = get_current_line(self.parsed_lrc, self.position)
             if not line:
                 line = f"{self.current_artist} - {self.current_title}" if self.current_title else "No lyrics"
