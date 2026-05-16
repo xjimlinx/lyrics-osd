@@ -671,7 +671,10 @@ def fetch_lyrics(title, artist):
     if source == "netease":
         return fetch_lrc_netease(title, artist)
     if source == "native":
-        return ""  # handled by real-time lyric page reading
+        lrc = read_cache(title, artist)
+        if lrc:
+            return lrc
+        return ""  # fallback to real-time lyric page reading
 
     if source == "lrclib_first":
         lrc = fetch_lrc(title, artist)
@@ -962,8 +965,8 @@ class LyricsBridge:
                 song = self._extract()
                 if song and song.get("title"):
                     self._handle_song(song)
-                    # Real-time lyric from QQ Music's own page (native mode only)
-                    if source == "native":
+                    # Real-time lyric from QQ Music's own page (native mode, no cache)
+                    if source == "native" and not self.parsed_lrc:
                         line = self._read_lyric_line()
                         if line and self.current_title:
                             write_lyrics(line)
