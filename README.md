@@ -55,7 +55,13 @@ systemctl --user status qqmusic-lyrics-bridge
 
 ## 使用指南
 
-启动 QQ Music 后，桥接脚本自动通过 Chrome DevTools Protocol 读取当前播放信息，从 lrclib.net 或网易云音乐获取 LRC 歌词，写入 `/tmp/lyrics-current.txt`。面板上的 widget 每 300ms 读取文件显示当前行。
+启动 QQ Music 后，桥接脚本自动通过 Chrome DevTools Protocol 读取当前播放信息，根据配置的歌词源获取歌词，写入 `/tmp/lyrics-current.txt`。面板上的 widget 每 300ms 读取文件显示当前行。
+
+### 歌词源（右键 Configure → 歌词来源）
+- **全部 (并行)** — 同时请求 lrclib.net 和网易云，先到先用
+- **QQ Music 原生** — 实时读取 QQ Music 自带的歌词窗口，歌词与 QQ Music 完全一致（推荐）
+- **仅 lrclib.net / 仅 网易云** — 只使用指定源
+- **优先 lrclib / 优先 网易云** — 指定源优先，失败则换另一个
 
 右键 widget → **Configure** 可调整：
 - 刷新间隔 (ms)
@@ -82,7 +88,8 @@ lyrics-osd/
 ## 歌词来源
 
 1. lrclib.net — 国际歌曲
-2. 网易云音乐 — 中文歌曲（自动回退）
+2. 网易云音乐 — 中文歌曲（Meting API → Vercel 代理 → 直连 API 三级回退）
+3. QQ Music 原生 — 直接读取 QQ Music 歌词窗口（需选择该歌词源）
 
 ## 相关文档
 

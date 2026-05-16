@@ -598,6 +598,29 @@ def read_plasmoid_lyrics_source():
     return "both"
 
 
+def read_plasmoid_player_type():
+    """Read playerType from plasmoid's KConfig (0=QQMusic, 1=Netease, 2=Spotify)."""
+    try:
+        cfg = configparser.ConfigParser()
+        cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
+        cfg.read(cfgpath)
+        applet_id = None
+        for sec in cfg.sections():
+            if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
+                m = re.search(r"Applets\]\[(\d+)\]?$", sec)
+                if m:
+                    applet_id = m.group(1)
+                    break
+        if applet_id:
+            for sec in cfg.sections():
+                if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
+                    if cfg.has_option(sec, "playerType"):
+                        return int(cfg.get(sec, "playerType"))
+    except Exception:
+        pass
+    return 0
+
+
 def fetch_lyrics(title, artist):
     """Fetch lyrics based on configured source."""
     if not title:
@@ -873,6 +896,16 @@ class LyricsBridge:
         while not _stop.is_set():
             try:
                 self._check_clear_cache()
+
+                # Player type: 0=QQMusic(CDP), 1=Netease(stub), 2=Spotify(stub)
+                player_type = read_plasmoid_player_type()
+                if player_type != 0:
+                    if not self.current_title:
+                        log.info(f"Player type {player_type}: not implemented")
+                        write_lyrics("No song detected")
+                    _stop.wait(3)
+                    continue
+
                 # Ensure CDP connection
                 if not self._ws:
                     if not self._connect_cdp():
@@ -899,8 +932,13 @@ class LyricsBridge:
                                 "artist": self.current_artist,
                                 "position": self.position,
                                 "duration": 0, "playing": True,
-                            "total_lines": 1,
-                        })
+                                "total_lines": 1,
+                                "current_line": line,
+                                "prev_line": "",
+                                "next_line": "",
+                                "current_idx": 0,
+                                "progress": 0,
+                            })
                 elif not self.current_title:
                     write_lyrics("No song detected")
                     _stop.wait(0.3)
@@ -963,6 +1001,20 @@ class LyricsBridge:
             if not line:
                 line = f"{self.current_artist} - {self.current_title}" if self.current_title else "No lyrics"
             write_lyrics(line)
+
+            # Build lyric context
+            prev_line = ""
+            next_line = ""
+            current_idx = 0
+            for idx, (ts, text) in enumerate(self.parsed_lrc):
+                if ts <= self.position:
+                    prev_line = "" if idx == 0 else self.parsed_lrc[idx - 1][1] if idx > 0 else ""
+                    next_line = self.parsed_lrc[idx + 1][1] if idx + 1 < len(self.parsed_lrc) else ""
+                    current_idx = idx
+                else:
+                    break
+
+            progress = self.position / duration if duration > 0 else 0
             write_meta({
                 "title": self.current_title,
                 "artist": self.current_artist,
@@ -970,6 +1022,11 @@ class LyricsBridge:
                 "duration": duration,
                 "playing": self.playing,
                 "total_lines": len(self.parsed_lrc),
+                "current_line": line,
+                "prev_line": prev_line,
+                "next_line": next_line,
+                "current_idx": current_idx,
+                "progress": round(progress, 3),
             })
 
     def _fetch_lyrics_async(self, title, artist, album=""):
