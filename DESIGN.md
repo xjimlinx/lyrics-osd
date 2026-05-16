@@ -26,7 +26,6 @@ KDE 任务栏显示
 ### qqmusic-lyrics-bridge
 
 - **CDP 连接** — 通过 Chrome DevTools Protocol 连接 QQ Music 的 Electron 实例，获取播放信息
-- **自动重启** — 检测到 QQ Music 运行中但未开启 debug 端口时，自动杀掉进程并以 `--remote-debugging-port=9223` 重新启动
 - **歌曲提取** — 从 `.player_cont` DOM 元素解析当前歌曲/歌手，从 `<audio>` 元素获取播放进度
 - **歌词获取** — 并行请求 lrclib.net 和网易云音乐，任一返回即可
 - **LRC 同步** — 解析 LRC 时间线，匹配当前播放位置，写入输出文件

@@ -31,8 +31,8 @@ EOF
 # 4. 重启面板
 plasmashell --replace &
 
-# 5. 启动 QQ Music（桥接会自动补 debug 端口，直接启动即可）
-qqmusic
+# 5. 启动 QQ Music（必须用 qqmusic-debug，默认启动不带 debug 端口）
+./qqmusic-debug
 
 # 6. 添加 widget 到面板
 # 右键任务栏 → 编辑模式 → 添加部件 → Lyrics OSD
@@ -41,8 +41,8 @@ qqmusic
 ## 快速开始
 
 ```bash
-# 1. 启动 QQ Music（任意方式均可，桥接会自动补 debug 端口）
-qqmusic
+# 1. 启动 QQ Music（必须带 debug 端口）
+./qqmusic-debug
 
 # 2. 确保桥接服务运行
 systemctl --user status qqmusic-lyrics-bridge

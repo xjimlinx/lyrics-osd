@@ -17,7 +17,6 @@ import argparse
 import logging
 import threading
 import configparser
-import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import websocket
@@ -366,37 +365,6 @@ def read_plasmoid_interval():
     return 300
 
 
-# ─── Auto-restart QQ Music ─────────────────────────────────────────────────
-
-def is_qqmusic_running():
-    """Check if QQ Music process exists."""
-    for line in (subprocess.check_output(["pgrep", "-a", "qqmusic"], text=True)
-                 .strip().split("\n") if os.system("pgrep qqmusic >/dev/null 2>&1") == 0 else []):
-        pass
-    return os.system("pgrep qqmusic >/dev/null 2>&1") == 0
-
-
-def restart_qqmusic_with_debug(port):
-    """If QQ Music is running without debug port, restart it with one."""
-    try:
-        output = subprocess.check_output(["pgrep", "-a", "qqmusic"], text=True)
-        for line in output.strip().split("\n"):
-            if "remote-debugging-port" in line:
-                return  # already has debug port
-            if "/qqmusic" in line and "--no-sandbox" in line:
-                log.info("QQ Music lacks debug port, restarting...")
-                subprocess.run(["pkill", "-9", "qqmusic"], timeout=5)
-                time.sleep(2)
-                subprocess.Popen(
-                    ["/usr/bin/qqmusic", "--no-sandbox", f"--remote-debugging-port={port}"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                log.info(f"QQ Music restarted with debug port {port}")
-                return
-    except Exception:
-        pass
-
-
 # ─── Main loop ────────────────────────────────────────────────────────────
 
 class LyricsBridge:
@@ -421,8 +389,6 @@ class LyricsBridge:
                 if song and song.get("title"):
                     self._handle_song(song)
                 else:
-                    # Try to auto-restart QQ Music with debug port
-                    restart_qqmusic_with_debug(self.port)
                     write_lyrics("No song detected")
                     time.sleep(1)
             except Exception as e:
