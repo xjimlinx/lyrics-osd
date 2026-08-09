@@ -17,6 +17,8 @@ KCM.SimpleKCM {
     property alias cfg_displayMode: displayModeCombo.currentIndex
     property alias cfg_proxyUrl: proxyField.text
     property alias cfg_showProgress: progressCheck.checked
+    // clearCache 是动作型配置（按钮直接写入），仅需接收框架的初始值，避免告警
+    property bool cfg_clearCache: false
 
     Kirigami.FormLayout {
         QQC2.Label { text: "刷新"; font.bold: true; topPadding: 8; bottomPadding: 4 }
