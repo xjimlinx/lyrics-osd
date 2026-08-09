@@ -39,7 +39,6 @@ PlasmoidItem {
                           && root.charTimes.length === root.lyricChars.length
                           && root.lyricChars.length > 0
     property real lineElapsed: 0
-    property real lineProgress: 0   // 当前行扫过进度 0~1
 
     // 封面
     property string coverPath: ""
@@ -69,6 +68,23 @@ PlasmoidItem {
         // 只有字符时间戳与正文等长时才逐字；karaoke 为绑定，配置改动即时生效
         lyricChars = text.split("")
         charTimes = (times && times.length === lyricChars.length) ? times : []
+    }
+
+    function charColor(i) {
+        // 每个字在它自己的时间点前后平滑渐亮：暗色 → 高亮色（120ms）
+        if (!root.karaoke || i >= root.charTimes.length) return Kirigami.Theme.textColor
+        var base = Kirigami.Theme.textColor
+        var dark = Qt.rgba(base.r, base.g, base.b, 0.42)
+        var hl = Kirigami.Theme.highlightColor
+        var t = (root.lineElapsed - root.charTimes[i]) / 0.12
+        t = Math.max(0, Math.min(1, t))
+        if (t >= 1) return hl
+        return Qt.rgba(
+            dark.r + (hl.r - dark.r) * t,
+            dark.g + (hl.g - dark.g) * t,
+            dark.b + (hl.b - dark.b) * t,
+            dark.a + (hl.a - dark.a) * t
+        )
     }
 
     function readMeta() {
@@ -130,15 +146,6 @@ PlasmoidItem {
                 if (root.duration > 0) {
                     root.progress = Math.min(1, root.position / root.duration)
                 }
-            }
-            // 行内扫过进度：从第一个字开始，到最后一个字结束（+0.3s 尾音）
-            if (root.karaoke && root.charTimes.length > 1) {
-                var span = root.charTimes[root.charTimes.length - 1] - root.charTimes[0] + 0.3
-                root.lineProgress = Math.max(0, Math.min(1, (root.lineElapsed - root.charTimes[0]) / span))
-            } else if (root.karaoke && root.charTimes.length === 1) {
-                root.lineProgress = root.lineElapsed >= root.charTimes[0] ? 1 : 0
-            } else {
-                root.lineProgress = 0
             }
         }
     }
@@ -204,9 +211,9 @@ PlasmoidItem {
                             visible: !root.karaoke
                         }
 
-                        // 卡拉 OK：两层文本叠加，上层高亮色按行内进度连续扫过
+                        // 卡拉 OK：单层逐字，每个字在其时间点前后 120ms 内平滑渐亮
                         Row {
-                            id: karaokeBase
+                            id: karaokeRow
                             visible: root.karaoke
                             anchors.horizontalCenter: parent.horizontalCenter
                             anchors.verticalCenter: parent.verticalCenter
@@ -217,34 +224,8 @@ PlasmoidItem {
                                     text: root.lyricChars[index]
                                     height: currentLine.height
                                     font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
-                                    color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.42)
+                                    color: root.charColor(index)
                                     verticalAlignment: Text.AlignVCenter
-                                }
-                            }
-                        }
-                        Item {
-                            id: karaokeHighlight
-                            visible: root.karaoke
-                            width: karaokeBase.visible ? root.lineProgress * karaokeBase.width : 0
-                            height: currentLine.height
-                            clip: true
-                            anchors.left: karaokeBase.left
-                            anchors.verticalCenter: karaokeBase.verticalCenter
-
-                            Row {
-                                id: karaokeHlRow
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 0
-                                Repeater {
-                                    model: root.karaoke ? root.lyricChars.length : 0
-                                    delegate: Text {
-                                        text: root.lyricChars[index]
-                                        height: currentLine.height
-                                        font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
-                                        color: Kirigami.Theme.highlightColor
-                                        verticalAlignment: Text.AlignVCenter
-                                    }
                                 }
                             }
                         }
