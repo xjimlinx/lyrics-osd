@@ -46,7 +46,7 @@ PlasmoidItem {
 
     // 悬浮提示状态
     property bool hovered: false
-    property bool tooltipShown: false
+    property bool tipReady: false
 
     function lineSlot() {
         if (view.height <= 0) return 0
@@ -77,19 +77,6 @@ PlasmoidItem {
         } else {
             charTimes = []
             karaoke = false
-        }
-    }
-
-    function showTip() {
-        if (!root.hovered || (root.songTitle === "" && root.coverSource === "")) return
-        tipArea.showTooltip()
-        root.tooltipShown = true
-    }
-
-    function hideTip() {
-        if (root.tooltipShown) {
-            tipArea.hideTooltip()
-            root.tooltipShown = false
         }
     }
 
@@ -170,25 +157,40 @@ PlasmoidItem {
         }
         onExited: {
             root.hovered = false
+            root.tipReady = false
             tooltipDelay.stop()
-            root.hideTip()
         }
     }
 
     Timer {
         id: tooltipDelay
         interval: 350
-        onTriggered: root.showTip()
+        onTriggered: {
+            if (root.hovered) root.tipReady = true
+        }
     }
 
-    // 显式 ToolTipArea：不依赖外层 CompactApplet 的自动触发
-    PlasmaCore.ToolTipArea {
-        id: tipArea
-        anchors.fill: parent
-        active: true
-        mainText: root.songTitle
-        subText: root.songArtist
+    // 自定义悬浮弹窗：中心与 widget 中心对齐（高度居中），并限制在屏幕内
+    PlasmaCore.Dialog {
+        id: tipDialog
+        location: PlasmaCore.Types.Floating
+        flags: Qt.ToolTip
+        hideOnWindowDeactivate: true
+        visible: root.hovered && root.tipReady
+                 && (root.songTitle !== "" || root.coverSource !== "")
         mainItem: tooltipContent
+        x: {
+            var pos = root.mapToGlobal(0, 0)
+            var x0 = Math.round(pos.x + root.width / 2 - tooltipContent.width / 2)
+            var s = root.availableScreenRect
+            return Math.max(s.x, Math.min(x0, s.x + s.width - tooltipContent.width))
+        }
+        y: {
+            var pos = root.mapToGlobal(0, 0)
+            var y0 = Math.round(pos.y + root.height / 2 - tooltipContent.height / 2)
+            var s = root.availableScreenRect
+            return Math.max(s.y, Math.min(y0, s.y + s.height - tooltipContent.height))
+        }
     }
 
     // tooltip 内容：封面 + 歌名/歌手/进度
