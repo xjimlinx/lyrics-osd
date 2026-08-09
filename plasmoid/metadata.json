@@ -5,7 +5,7 @@
         "Description": "Display synced lyrics from QQ Music / MoeKoeMusic on the KDE panel",
         "Category": "Multimedia",
         "Icon": "view-media-lyrics",
-        "Version": "0.6.0",
+        "Version": "0.6.1",
         "License": "MIT",
         "Authors": [{"Name": "xein"}]
     },
