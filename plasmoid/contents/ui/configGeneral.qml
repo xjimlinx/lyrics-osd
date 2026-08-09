@@ -18,6 +18,8 @@ KCM.SimpleKCM {
     property alias cfg_displayMode: displayModeCombo.currentIndex
     property alias cfg_proxyUrl: proxyField.text
     property alias cfg_showProgress: progressCheck.checked
+    property alias cfg_karaokeMode: karaokeCheck.checked
+    property alias cfg_showCover: coverCheck.checked
     // clearCache 是动作型配置（按钮直接写入），仅需接收框架的初始值，避免告警
     property bool cfg_clearCache: false
 
@@ -140,6 +142,28 @@ KCM.SimpleKCM {
         }
         QQC2.Label {
             text: "在歌词旁边显示当前播放进度条。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
+        QQC2.CheckBox {
+            id: karaokeCheck; Kirigami.FormData.label: "卡拉 OK"
+            text: "逐字点亮当前行歌词"
+        }
+        QQC2.Label {
+            text: "唱到的字高亮、未唱到的字变暗，逐字点亮。需要 MoeKoeMusic 的 KRC 歌词，其他歌词源自动整行显示。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
+        QQC2.CheckBox {
+            id: coverCheck; Kirigami.FormData.label: "封面"
+            text: "显示专辑封面"
+        }
+        QQC2.Label {
+            text: "在歌词左侧显示当前歌曲的专辑封面，无封面时自动隐藏。"
             color: Kirigami.Theme.disabledTextColor
             wrapMode: Text.Wrap
             bottomPadding: 6

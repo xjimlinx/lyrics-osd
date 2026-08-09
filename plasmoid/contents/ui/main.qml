@@ -22,6 +22,8 @@ PlasmoidItem {
     property int fw: Plasmoid.configuration.fontBold ? Font.Bold : Font.Normal
     property bool fi: Plasmoid.configuration.fontItalic
     property bool sp: Plasmoid.configuration.showProgress
+    property bool karaokeMode: Plasmoid.configuration.karaokeMode
+    property bool showCover: Plasmoid.configuration.showCover
 
     // 歌曲信息（封面与逐字推进用）
     property real position: 0
@@ -33,7 +35,9 @@ PlasmoidItem {
     // 卡拉 OK 逐字高亮
     property var lyricChars: []
     property var charTimes: []
-    property bool karaoke: false
+    property bool karaoke: root.karaokeMode
+                          && root.charTimes.length === root.lyricChars.length
+                          && root.lyricChars.length > 0
     property real lineElapsed: 0
 
     // 封面
@@ -61,16 +65,9 @@ PlasmoidItem {
     }
 
     function buildChars(text, times) {
-        // 只有字符时间戳与正文等长时才启用逐字；否则整行显示
-        var chars = text.split("")
-        lyricChars = chars
-        if (times && times.length === chars.length) {
-            charTimes = times
-            karaoke = true
-        } else {
-            charTimes = []
-            karaoke = false
-        }
+        // 只有字符时间戳与正文等长时才逐字；karaoke 为绑定，配置改动即时生效
+        lyricChars = text.split("")
+        charTimes = (times && times.length === lyricChars.length) ? times : []
     }
 
     function readMeta() {
@@ -151,7 +148,7 @@ PlasmoidItem {
                 id: coverItem
                 Layout.preferredWidth: Math.max(28, root.height - 4)
                 Layout.preferredHeight: Math.max(28, root.height - 4)
-                visible: root.coverSource !== ""
+                visible: root.showCover && root.coverSource !== ""
                 Image {
                     anchors.fill: parent
                     source: root.coverSource
