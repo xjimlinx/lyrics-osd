@@ -111,7 +111,15 @@ PlasmoidItem {
                     duration = m.duration || 0
                     playing = !!m.playing
                     metaTime = Date.now()
-                    lineElapsed = Math.max(0, position - lineStart)
+                    if (t === lyric) {
+                        // seek 回退检测：position 明显小于当前推进值时允许重置
+                        var baseline = Math.max(0, position - lineStart)
+                        if (baseline < lineElapsed - 0.8) {
+                            lineElapsed = baseline
+                        }
+                    } else {
+                        lineElapsed = 0   // 新行从 0 开始，由推进器推进
+                    }
                     var cv = m.cover || ""
                     var cvVer = m.cover_ver || 0
                     if (cv !== coverPath || cvVer !== coverVer) {
@@ -137,7 +145,8 @@ PlasmoidItem {
         onTriggered: {
             if (root.playing) {
                 var now = (Date.now() - root.metaTime) / 1000
-                root.lineElapsed = Math.max(0, root.position - root.lineStart + now)
+                // 单调推进：轮询的 position 可能滞后，只进不退，避免字反复横跳
+                root.lineElapsed = Math.max(root.lineElapsed, Math.max(0, root.position - root.lineStart + now))
                 if (root.duration > 0) {
                     root.progress = Math.min(1, (root.position + now) / root.duration)
                 }
