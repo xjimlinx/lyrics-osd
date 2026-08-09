@@ -39,6 +39,7 @@ PlasmoidItem {
                           && root.charTimes.length === root.lyricChars.length
                           && root.lyricChars.length > 0
     property real lineElapsed: 0
+    property real lineProgress: 0   // 当前行扫过进度 0~1
 
     // 封面
     property string coverPath: ""
@@ -130,6 +131,15 @@ PlasmoidItem {
                     root.progress = Math.min(1, root.position / root.duration)
                 }
             }
+            // 行内扫过进度：从第一个字开始，到最后一个字结束（+0.3s 尾音）
+            if (root.karaoke && root.charTimes.length > 1) {
+                var span = root.charTimes[root.charTimes.length - 1] - root.charTimes[0] + 0.3
+                root.lineProgress = Math.max(0, Math.min(1, (root.lineElapsed - root.charTimes[0]) / span))
+            } else if (root.karaoke && root.charTimes.length === 1) {
+                root.lineProgress = root.lineElapsed >= root.charTimes[0] ? 1 : 0
+            } else {
+                root.lineProgress = 0
+            }
         }
     }
 
@@ -194,7 +204,9 @@ PlasmoidItem {
                             visible: !root.karaoke
                         }
 
+                        // 卡拉 OK：两层文本叠加，上层高亮色按行内进度连续扫过
                         Row {
+                            id: karaokeBase
                             visible: root.karaoke
                             anchors.horizontalCenter: parent.horizontalCenter
                             anchors.verticalCenter: parent.verticalCenter
@@ -205,11 +217,34 @@ PlasmoidItem {
                                     text: root.lyricChars[index]
                                     height: currentLine.height
                                     font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
-                                    color: root.lineElapsed >= root.charTimes[index]
-                                           ? Kirigami.Theme.highlightColor
-                                           : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.42)
+                                    color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.42)
                                     verticalAlignment: Text.AlignVCenter
-                                    Behavior on color { ColorAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                                }
+                            }
+                        }
+                        Item {
+                            id: karaokeHighlight
+                            visible: root.karaoke
+                            width: karaokeBase.visible ? root.lineProgress * karaokeBase.width : 0
+                            height: currentLine.height
+                            clip: true
+                            anchors.left: karaokeBase.left
+                            anchors.verticalCenter: karaokeBase.verticalCenter
+
+                            Row {
+                                id: karaokeHlRow
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 0
+                                Repeater {
+                                    model: root.karaoke ? root.lyricChars.length : 0
+                                    delegate: Text {
+                                        text: root.lyricChars[index]
+                                        height: currentLine.height
+                                        font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
+                                        color: Kirigami.Theme.highlightColor
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
                                 }
                             }
                         }
