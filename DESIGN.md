@@ -2,23 +2,21 @@
 
 ## 概述
 
-在 KDE Plasma 6 的任务栏上实时显示 QQ Music 的同步歌词。QQ Music Linux 版不原生支持 MPRIS2，因此无法直接使用现有歌词 widget。本项目通过 Chrome DevTools Protocol 注入 QQ Music 进程获取播放信息，辅以在线歌词 API 实现同步歌词功能。
+在 KDE Plasma 6 的任务栏上实时显示 QQ Music / MoeKoeMusic 的同步歌词。QQ Music Linux 版不原生支持 MPRIS2，因此无法直接使用现有歌词 widget。本项目通过 Chrome DevTools Protocol 注入 QQ Music 进程获取播放信息；MoeKoeMusic 则通过其内置 WebSocket API 实时接收播放状态与歌词，辅以在线歌词 API 实现同步歌词功能。
 
 ## 架构
 
 ```
-QQ Music (Electron)
-    │  --remote-debugging-port=9223
-    ▼
-qqmusic-lyrics-bridge (Python 守护进程)
-    │  CDP → 提取歌手/歌名/进度
-    │  lrclib.net / 网易云 → 获取 LRC
-    │  写入 /tmp/lyrics-current.txt
-    ▼
-plasmoid (QML)
-    │  XMLHttpRequest 轮询读取
-    ▼
-KDE 任务栏显示
+QQ Music (Electron) ──CDP 9223──┐
+                                ├─▶ qqmusic-lyrics-bridge (Python 守护进程)
+MoeKoeMusic (Electron) ──WS 6520┘
+                                    │  CDP 提取 / WS 订阅播放状态 + KRC 歌词
+                                    │  lrclib.net / 网易云 → 获取 LRC
+                                    │  写入 /tmp/lyrics-current.txt
+                                    ▼
+                              plasmoid (QML) 轮询读取
+                                    ▼
+                              KDE 任务栏显示
 ```
 
 ## 核心模块
@@ -26,6 +24,7 @@ KDE 任务栏显示
 ### qqmusic-lyrics-bridge
 
 - **CDP 连接** — 通过 Chrome DevTools Protocol 连接 QQ Music 的 Electron 实例，获取播放信息
+- **WebSocket API** — 连接 MoeKoeMusic 的 `ws://127.0.0.1:6520/`，接收 `lyrics` / `playerState` 消息，解析 KRC 歌词
 - **歌曲提取** — 从 `.player_cont` DOM 元素解析当前歌曲/歌手，从 `<audio>` 元素获取播放进度
 - **歌词获取** — 并行请求 lrclib.net 和网易云音乐，任一返回即可
 - **LRC 同步** — 解析 LRC 时间线，匹配当前播放位置，写入输出文件

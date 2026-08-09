@@ -1,11 +1,13 @@
 [Unit]
-Description=QQ Music Lyrics Bridge
+Description=Music Lyrics Bridge
 After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/home/xein/CODE/Tools/lyrics-osd/qqmusic-lyrics-bridge
+# NOTE: setup.sh regenerates this file with the real repository path.
+# The bridge is pure stdlib and runs with the system python3 (shebang).
+ExecStart=/Code/Tools/lyrics-osd/qqmusic-lyrics-bridge
 Restart=on-failure
 RestartSec=5
 

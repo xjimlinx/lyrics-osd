@@ -19,9 +19,11 @@
   - `0` = QQ Music（CDP 连接）
   - `1` = 网易云音乐（未实现）
   - `2` = Spotify（未实现）
+  - `3` = MoeKoeMusic（WebSocket API，端口 6520）
 - 歌词源 `lyricsSource` 也是 Int 枚举：
   - `0` = both, `1` = native, `2` = lrclib, `3` = netease, `4` = lrclib_first, `5` = netease_first
 - 映射表 `_SOURCE_MAP` 在桥接中定义
+- MoeKoeMusic 后端（`_run_moekoe`）事件驱动：`lyrics` 消息带 `currentSong`（name/author）、KRC 歌词、`currentTime`、`duration`；`playerState` 带 `isPlaying`/`currentTime`；KRC 解析见 `parse_krc`
 
 ## 构建与运行
 

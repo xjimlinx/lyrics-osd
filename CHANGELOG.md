@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.0] - 2026-08-10
+
+### Changed
+- 桥接改为纯 Python 标准库实现（自研 WebSocket 客户端 + urllib HTTP），不再需要 pip 安装 websocket-client / requests，系统自带 python3 即可运行
+- setup.sh 不再创建 venv，systemd 服务直接执行桥接脚本
+- 配置页的“宽度/高度”设置现在真正作用于 widget
+- 歌词切换带播放器式上滚动画，进度条平滑过渡
+
+### Fixed
+- 无歌曲时同步清空 meta，widget 不再残留上一首歌
+- meta 写入改为原子写（临时文件 + rename）
+- 移除未使用的死代码与无意义的后台等待
+
+## [0.5.0] - 2026-08-10
+
+### Added
+- MoeKoeMusic 播放器支持：通过内置 WebSocket API（ws://127.0.0.1:6520）实时订阅播放状态与 KRC 歌词
+- KRC 歌词解析（含 offset 偏移、字符级时间标签剥离）
+- `--moekoe-port` 参数覆盖默认端口
+- 配置页播放器列表新增 MoeKoeMusic
+
+### Changed
+- 桥接启动日志同时输出 CDP 与 MoeKoeMusic WS 端口
+
 ## [0.4.0] - 2026-05-17
 
 ### Added

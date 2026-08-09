@@ -26,7 +26,7 @@ KCM.SimpleKCM {
         QQC2.Label { text: "播放器"; font.bold: true; topPadding: 8; bottomPadding: 4 }
         QQC2.ComboBox {
             id: playerCombo; Kirigami.FormData.label: "播放器"
-            model: ["QQ Music", "网易云音乐", "Spotify"]
+            model: ["QQ Music", "网易云音乐", "Spotify", "MoeKoeMusic"]
             Component.onCompleted: currentIndex = Plasmoid.configuration.playerType
         }
         Kirigami.Separator { Kirigami.FormData.isSection: true }

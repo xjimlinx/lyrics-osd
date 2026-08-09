@@ -2,10 +2,10 @@
     "KPlugin": {
         "Id": "com.github.xein.lyrics-osd",
         "Name": "Lyrics OSD",
-        "Description": "Display synced lyrics from QQ Music on the KDE panel",
+        "Description": "Display synced lyrics from QQ Music / MoeKoeMusic on the KDE panel",
         "Category": "Multimedia",
         "Icon": "view-media-lyrics",
-        "Version": "0.4.0",
+        "Version": "0.6.0",
         "License": "MIT",
         "Authors": [{"Name": "xein"}]
     },
