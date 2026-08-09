@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 import org.kde.kcmutils as KCM
@@ -22,14 +23,30 @@ KCM.SimpleKCM {
 
     Kirigami.FormLayout {
         QQC2.Label { text: "刷新"; font.bold: true; topPadding: 8; bottomPadding: 4 }
-        QQC2.SpinBox { id: refreshSpinBox; Kirigami.FormData.label: "刷新间隔 (ms)"; from: 50; to: 5000; stepSize: 50 }
+        QQC2.SpinBox {
+            id: refreshSpinBox; Kirigami.FormData.label: "刷新间隔 (ms)"; from: 50; to: 5000; stepSize: 50
+        }
+        QQC2.Label {
+            text: "歌词与播放进度的刷新频率。越小越跟手，但更耗 CPU，一般 200-500ms 即可。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 
         QQC2.Label { text: "播放器"; font.bold: true; topPadding: 8; bottomPadding: 4 }
         QQC2.ComboBox {
             id: playerCombo; Kirigami.FormData.label: "播放器"
             model: ["QQ Music", "网易云音乐", "Spotify", "MoeKoeMusic"]
-            Component.onCompleted: currentIndex = Plasmoid.configuration.playerType
+            Component.onCompleted: if (typeof Plasmoid !== "undefined") currentIndex = Plasmoid.configuration.playerType
+        }
+        QQC2.Label {
+            text: "选择要同步歌词的音乐播放器。MoeKoeMusic 需先在音乐软件内开启 API 服务（端口 6520）。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
         }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 
@@ -37,30 +54,96 @@ KCM.SimpleKCM {
         QQC2.ComboBox {
             id: sourceCombo; Kirigami.FormData.label: "歌词来源"
             model: ["全部 (并行)", "QQ Music 原生", "仅 lrclib.net", "仅 网易云音乐", "优先 lrclib", "优先 网易云"]
-            Component.onCompleted: currentIndex = Plasmoid.configuration.lyricsSource
+            Component.onCompleted: if (typeof Plasmoid !== "undefined") currentIndex = Plasmoid.configuration.lyricsSource
+        }
+        QQC2.Label {
+            text: "全部（并行）：多来源同时查询，取先返回的结果。\nQQ Music 原生：仅用播放器提供的歌词。\n仅 lrclib / 仅网易云：只从对应在线源获取。\n优先 lrclib / 优先网易云：在线源优先，缺失时回退播放器原生歌词。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
         }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 
         QQC2.Label { text: "字体"; font.bold: true; topPadding: 8; bottomPadding: 4 }
-        QQC2.SpinBox { id: fontSizeSpinBox; Kirigami.FormData.label: "字号"; from: 8; to: 72 }
-        QQC2.CheckBox { id: boldCheckBox; Kirigami.FormData.label: "加粗" }
-        QQC2.CheckBox { id: italicCheckBox; Kirigami.FormData.label: "斜体" }
+        QQC2.SpinBox {
+            id: fontSizeSpinBox; Kirigami.FormData.label: "字号"; from: 8; to: 72
+        }
+        QQC2.Label {
+            text: "歌词文字大小（像素）。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
+        QQC2.CheckBox {
+            id: boldCheckBox; Kirigami.FormData.label: "加粗"
+        }
+        QQC2.Label {
+            text: "歌词文字加粗显示。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
+        QQC2.CheckBox {
+            id: italicCheckBox; Kirigami.FormData.label: "斜体"
+        }
+        QQC2.Label {
+            text: "歌词文字斜体显示。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 
         QQC2.Label { text: "尺寸"; font.bold: true; topPadding: 8; bottomPadding: 4 }
-        QQC2.SpinBox { id: widthSpinBox; Kirigami.FormData.label: "宽度"; from: 100; to: 2000; stepSize: 10 }
-        QQC2.SpinBox { id: heightSpinBox; Kirigami.FormData.label: "高度"; from: 16; to: 200 }
+        QQC2.SpinBox {
+            id: widthSpinBox; Kirigami.FormData.label: "宽度"; from: 100; to: 2000; stepSize: 10
+        }
+        QQC2.Label {
+            text: "Widget 在面板上占用的宽度（像素）。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
+        QQC2.SpinBox {
+            id: heightSpinBox; Kirigami.FormData.label: "高度"; from: 16; to: 200
+        }
+        QQC2.Label {
+            text: "Widget 在面板上占用的高度（像素）。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 
         QQC2.Label { text: "显示"; font.bold: true; topPadding: 8; bottomPadding: 4 }
         QQC2.ComboBox {
             id: displayModeCombo; Kirigami.FormData.label: "显示模式"
             model: ["单行歌词", "三行歌词", "两行·当前在上", "两行·当前在下"]
-            Component.onCompleted: currentIndex = Number(Plasmoid.configuration.displayMode)
+            Component.onCompleted: if (typeof Plasmoid !== "undefined") currentIndex = Number(Plasmoid.configuration.displayMode)
+        }
+        QQC2.Label {
+            text: "单行：只显示当前行。\n三行：当前行居中，上下各显示一行。\n两行·当前在上 / 在下：当前行固定在上方或下方。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
         }
         QQC2.CheckBox {
             id: progressCheck; Kirigami.FormData.label: "进度条"
             text: "显示播放进度条"
+        }
+        QQC2.Label {
+            text: "在歌词旁边显示当前播放进度条。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
         }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 
@@ -69,9 +152,26 @@ KCM.SimpleKCM {
             id: proxyField; Kirigami.FormData.label: "HTTP 代理"
             placeholderText: "http://127.0.0.1:7890"
         }
+        QQC2.Label {
+            text: "访问在线歌词源（lrclib / 网易云）时使用的 HTTP 代理，格式如 http://127.0.0.1:7890，留空则不使用。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 
         QQC2.Label { text: "缓存"; font.bold: true; topPadding: 8; bottomPadding: 4 }
-        QQC2.Button { text: "清空歌词缓存"; icon.name: "edit-clear"; onClicked: Plasmoid.configuration.clearCache = true }
+        QQC2.Button {
+            text: "清空歌词缓存"; icon.name: "edit-clear"
+            onClicked: Plasmoid.configuration.clearCache = true
+        }
+        QQC2.Label {
+            text: "删除已缓存的歌词数据，下次播放时重新获取。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
     }
 }
