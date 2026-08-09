@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.1] - 2026-08-10
+
+### Changed
+- 重构：plasmoid 配置读取收敛为统一 helper，去掉 4 处重复代码
+- widget 配置改为 QML 响应式绑定，移除 500ms 配置轮询定时器
+- `qqmusic-debug` 自动探测 QQ Music 可执行文件路径
+- setup.sh 增加 python3 前置检查
+
+### Fixed
+- CDP 消息 id 改用自增计数，避免同毫秒内 id 碰撞
+- 删除网易云直连函数中不可达的死代码
+
 ## [0.6.0] - 2026-08-10
 
 ### Changed

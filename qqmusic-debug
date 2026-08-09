@@ -1,3 +1,4 @@
 #!/bin/bash
 # QQ Music launcher with remote debugging enabled for lyrics bridge
-exec /usr/bin/qqmusic --no-sandbox --remote-debugging-port=9223 "$@"
+QQ_BIN="$(command -v qqmusic || echo /usr/bin/qqmusic)"
+exec "$QQ_BIN" --no-sandbox --remote-debugging-port=9223 "$@"

@@ -20,6 +20,7 @@ import argparse
 import logging
 import threading
 import configparser
+import itertools
 import socket
 import base64
 import hashlib
@@ -42,6 +43,11 @@ LYRICS_FILE = "/tmp/lyrics-current.txt"
 META_FILE = "/tmp/lyrics-meta.json"
 CACHE_DIR = os.path.expanduser("~/.cache/lyrics-osd")
 _current_album = ""
+_MSG_IDS = itertools.count(1)
+
+
+def _next_msg_id():
+    return next(_MSG_IDS)
 
 
 # ─── Minimal HTTP (stdlib urllib, proxy-aware) ───────────────────────────
@@ -331,7 +337,7 @@ def get_ws_url(port):
 
 def cdp_call(ws, method, params=None):
     """Send a CDP command and wait for a result. Ignores non-matching events."""
-    msg_id = int(time.time() * 1000) % 100000
+    msg_id = _next_msg_id()
     msg = json.dumps({
         "id": msg_id,
         "method": method,
@@ -358,7 +364,7 @@ def cdp_call(ws, method, params=None):
 
 def cdp_send_only(ws, method, params=None):
     ws.send(json.dumps({
-        "id": int(time.time() * 1000) % 100000,
+        "id": _next_msg_id(),
         "method": method,
         "params": params or {},
     }))
@@ -531,94 +537,6 @@ def _fetch_via_direct(title, artist, headers):
     except Exception as e:
         log.debug(f"netease direct error: {e}")
         return ""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-            "Referer": "https://music.163.com/",
-        }
-        # Step 1: Search
-        keyword = title
-        if artist:
-            keyword = f"{title} {artist}"
-        resp = http_get(
-            "https://music.163.com/api/search/get",
-            params={"s": keyword, "type": 1, "limit": 5},
-            headers=headers,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        songs = (data.get("result", {}) or {}).get("songs", [])
-        if not songs:
-            return ""
-
-        # Step 2: Find best match and get lyrics
-        best_id = None
-        for song in songs:
-            sid = song.get("id")
-            if not sid:
-                continue
-            sname = song.get("name", "")
-            sartists = [a.get("name", "") for a in song.get("artists", [])]
-            sartist = ", ".join(sartists)
-            # Fuzzy match
-            if title.lower() in sname.lower() or sname.lower() in title.lower():
-                best_id = sid
-                break
-            if artist and any(artist.lower() in a.lower() for a in sartists):
-                best_id = sid
-                break
-        if not best_id:
-            best_id = songs[0].get("id")
-
-        if not best_id:
-            return ""
-
-        # Step 3: Fetch lyrics
-        resp2 = http_get(
-            "https://music.163.com/api/song/lyric",
-            params={"id": best_id, "lv": 1, "kv": 1, "tv": -1},
-            headers=headers,
-            timeout=10,
-        )
-        resp2.raise_for_status()
-        lyric_data = resp2.json()
-        lrc = (lyric_data.get("lrc", {}) or {}).get("lyric", "")
-        if lrc and re.search(r'\[\d+:', lrc):
-            return lrc
-        # Try translated lyrics as fallback
-        tlyric = (lyric_data.get("tlyric", {}) or {}).get("lyric", "")
-        if tlyric and re.search(r'\[\d+:', tlyric):
-            return tlyric
-        return ""
-    except Exception as e:
-        log.debug(f"fetch_lrc_netease error: {e}")
-
-    # Fallback: try the original Netease API directly
-    try:
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
-        keyword = f"{title} {artist}"
-        resp = http_get(
-            "https://music.163.com/api/search/get",
-            params={"s": keyword, "type": 1, "limit": 5},
-            headers=headers, timeout=10,
-        )
-        songs = (resp.json().get("result", {}) or {}).get("songs", [])
-        if songs:
-            sid = songs[0].get("id")
-            if sid:
-                r2 = http_get(
-                    f"https://music.163.com/api/song/lyric?id={sid}&lv=1&kv=1&tv=-1",
-                    headers=headers, timeout=10,
-                )
-                d = r2.json()
-                lrc = (d.get("lrc", {}) or {}).get("lyric", "")
-                if lrc and re.search(r'\[\d+:', lrc):
-                    return lrc
-    except Exception as e:
-        log.debug(f"fetch_lrc_netease fallback error: {e}")
-
-    return ""
 
 
 def parse_lrc(lrc_text):
@@ -710,32 +628,54 @@ def write_no_song():
 
 # ─── Shared config ────────────────────────────────────────────────────────
 
-def read_plasmoid_interval():
-    """Read refreshInterval from plasmoid's KConfig (if available)."""
-    try:
-        cfg = configparser.ConfigParser()
-        cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
-        cfg.read(cfgpath)
+_PLASMOID_CFG_PATH = os.path.expanduser(
+    "~/.config/plasma-org.kde.plasma.desktop-appletsrc"
+)
+_PLASMOID_ID = "com.github.xein.lyrics-osd"
 
-        # Step 1: find applet ID by plugin name
+
+def _find_general_section(cfg=None):
+    """Return the lyrics-osd applet's Configuration/General section name, or None."""
+    try:
+        if cfg is None:
+            cfg = configparser.ConfigParser()
+            cfg.read(_PLASMOID_CFG_PATH)
         applet_id = None
         for sec in cfg.sections():
-            if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
-                # Extract applet ID from section e.g. "Containments][172][Applets][329"
+            if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == _PLASMOID_ID:
+                # Section looks like "Containments][172][Applets][329"
                 m = re.search(r"Applets\]\[(\d+)\]?$", sec)
                 if m:
                     applet_id = m.group(1)
                     break
-
-        # Step 2: find Configuration/General section for that applet
         if applet_id:
             for sec in cfg.sections():
                 if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
-                    if cfg.has_option(sec, "refreshInterval"):
-                        return int(cfg.get(sec, "refreshInterval"))
+                    return sec
     except Exception:
         pass
-    return 300
+    return None
+
+
+def _read_general_option(key, default=None):
+    """Read one General option from the lyrics-osd applet config."""
+    try:
+        cfg = configparser.ConfigParser()
+        cfg.read(_PLASMOID_CFG_PATH)
+        sec = _find_general_section(cfg)
+        if sec and cfg.has_option(sec, key):
+            return cfg.get(sec, key)
+    except Exception:
+        pass
+    return default
+
+
+def read_plasmoid_interval():
+    """Read refreshInterval from plasmoid's KConfig (if available)."""
+    try:
+        return int(_read_general_option("refreshInterval"))
+    except (TypeError, ValueError):
+        return 300
 
 
 _SOURCE_MAP = ["both", "native", "lrclib", "netease", "lrclib_first", "netease_first"]
@@ -744,25 +684,9 @@ _SOURCE_MAP = ["both", "native", "lrclib", "netease", "lrclib_first", "netease_f
 def read_plasmoid_lyrics_source():
     """Read lyricsSource from plasmoid's KConfig."""
     try:
-        cfg = configparser.ConfigParser()
-        cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
-        cfg.read(cfgpath)
-
-        applet_id = None
-        for sec in cfg.sections():
-            if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
-                m = re.search(r"Applets\]\[(\d+)\]?$", sec)
-                if m:
-                    applet_id = m.group(1)
-                    break
-        if applet_id:
-            for sec in cfg.sections():
-                if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
-                    if cfg.has_option(sec, "lyricsSource"):
-                        return _SOURCE_MAP[int(cfg.get(sec, "lyricsSource"))]
-    except Exception:
-        pass
-    return "both"
+        return _SOURCE_MAP[int(_read_general_option("lyricsSource"))]
+    except (TypeError, ValueError, IndexError):
+        return "both"
 
 
 def read_plasmoid_player_type():
@@ -771,50 +695,22 @@ def read_plasmoid_player_type():
     0=QQMusic (CDP), 1=Netease (stub), 2=Spotify (stub), 3=MoeKoeMusic (WS API).
     """
     try:
-        cfg = configparser.ConfigParser()
-        cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
-        cfg.read(cfgpath)
-        applet_id = None
-        for sec in cfg.sections():
-            if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
-                m = re.search(r"Applets\]\[(\d+)\]?$", sec)
-                if m:
-                    applet_id = m.group(1)
-                    break
-        if applet_id:
-            for sec in cfg.sections():
-                if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
-                    if cfg.has_option(sec, "playerType"):
-                        return int(cfg.get(sec, "playerType"))
-    except Exception:
-        pass
-    return 0
+        return int(_read_general_option("playerType"))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _build_http_opener():
     """Read proxy URL from plasmoid config and build a proxy-aware urllib opener."""
     global _HTTP_OPENER
     try:
-        cfg = configparser.ConfigParser()
-        cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
-        cfg.read(cfgpath)
-        applet_id = None
-        for sec in cfg.sections():
-            if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
-                m = re.search(r"Applets\]\[(\d+)\]?$", sec)
-                if m:
-                    applet_id = m.group(1)
-                    break
-        if applet_id:
-            for sec in cfg.sections():
-                if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
-                    if cfg.has_option(sec, "proxyUrl") and cfg.get(sec, "proxyUrl"):
-                        url = cfg.get(sec, "proxyUrl").strip()
-                        _HTTP_OPENER = urllib.request.build_opener(
-                            urllib.request.ProxyHandler({"http": url, "https": url})
-                        )
-                        log.info(f"Proxy set: {url}")
-                        return
+        url = (_read_general_option("proxyUrl") or "").strip()
+        if url:
+            _HTTP_OPENER = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": url, "https": url})
+            )
+            log.info(f"Proxy set: {url}")
+            return
     except Exception:
         pass
     _HTTP_OPENER = urllib.request.build_opener()
@@ -1079,28 +975,17 @@ class LyricsBridge:
         """Check if clearCache flag is set in plasmoid config."""
         try:
             cfg = configparser.ConfigParser()
-            cfgpath = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
-            cfg.read(cfgpath)
-            applet_id = None
-            for sec in cfg.sections():
-                if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == "com.github.xein.lyrics-osd":
-                    m = re.search(r"Applets\]\[(\d+)\]?$", sec)
-                    if m:
-                        applet_id = m.group(1)
-                        break
-            if applet_id:
-                for sec in cfg.sections():
-                    if f"Applets][{applet_id}][Configuration][General]" in f"[{sec}]":
-                        if cfg.has_option(sec, "clearCache") and cfg.getboolean(sec, "clearCache"):
-                            log.info("Clearing lyrics cache...")
-                            for f in os.listdir(CACHE_DIR):
-                                if f.endswith(".lrc") or f.endswith(".id"):
-                                    os.remove(os.path.join(CACHE_DIR, f))
-                            cfg.set(sec, "clearCache", "false")
-                            with open(cfgpath, "w") as f:
-                                cfg.write(f)
-                            log.info(f"Cache cleared ({CACHE_DIR})")
-                        break
+            cfg.read(_PLASMOID_CFG_PATH)
+            sec = _find_general_section(cfg)
+            if sec and cfg.has_option(sec, "clearCache") and cfg.getboolean(sec, "clearCache"):
+                log.info("Clearing lyrics cache...")
+                for f in os.listdir(CACHE_DIR):
+                    if f.endswith(".lrc") or f.endswith(".id"):
+                        os.remove(os.path.join(CACHE_DIR, f))
+                cfg.set(sec, "clearCache", "false")
+                with open(_PLASMOID_CFG_PATH, "w") as f:
+                    cfg.write(f)
+                log.info(f"Cache cleared ({CACHE_DIR})")
         except Exception as e:
             log.debug(f"clear cache error: {e}")
 

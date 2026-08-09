@@ -12,6 +12,11 @@ echo " Lyrics OSD - QQ Music + MoeKoeMusic + KDE"
 echo "========================================="
 echo ""
 
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "错误：未找到 python3，请先安装（KDE 发行版一般自带）" >&2
+    exit 1
+fi
+
 # ── 1. Install plasmoid ──
 echo "=> [1/6] Installing plasmoid..."
 mkdir -p "$PLASMOID_DIR"

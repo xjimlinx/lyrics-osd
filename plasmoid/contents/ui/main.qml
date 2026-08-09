@@ -17,7 +17,7 @@ PlasmoidItem {
     property string dPrev: ""
     property string dNext: ""
     property real progress: 0
-    property int dm: 0
+    property int dm: Plasmoid.configuration.displayMode
     property int fs: Plasmoid.configuration.fontPixelSize
     property int fw: Plasmoid.configuration.fontBold ? Font.Bold : Font.Normal
     property bool sp: Plasmoid.configuration.showProgress
@@ -68,7 +68,6 @@ PlasmoidItem {
     }
 
     Timer { interval: 250; running: true; repeat: true; onTriggered: readMeta() }
-    Timer { interval: 500; running: true; repeat: true; onTriggered: { dm = Number(Plasmoid.configuration.displayMode); fs = Number(Plasmoid.configuration.fontPixelSize); fw = Plasmoid.configuration.fontBold ? Font.Bold : Font.Normal; sp = Plasmoid.configuration.showProgress } }
 
     Item {
         id: view
