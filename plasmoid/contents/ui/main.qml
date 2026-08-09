@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import org.kde.plasma.plasmoid
-import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.components as PlasmaComponents3
 import org.kde.kirigami as Kirigami
 
@@ -24,9 +23,7 @@ PlasmoidItem {
     property bool fi: Plasmoid.configuration.fontItalic
     property bool sp: Plasmoid.configuration.showProgress
 
-    // 歌曲信息（悬浮提示与逐字推进用）
-    property string songTitle: ""
-    property string songArtist: ""
+    // 歌曲信息（封面与逐字推进用）
     property real position: 0
     property real lineStart: 0
     property real duration: 0
@@ -44,15 +41,11 @@ PlasmoidItem {
     property int coverVer: 0
     property string coverSource: ""
 
-    // 悬浮提示状态
-    property bool hovered: false
-    property bool tooltipShown: false
-
     function lineSlot() {
-        if (view.height <= 0) return 0
-        if (root.dm === 0) return view.height
-        if (root.dm === 1) return view.height * 0.4
-        return view.height * 0.5
+        if (lyricArea.height <= 0) return 0
+        if (root.dm === 0) return lyricArea.height
+        if (root.dm === 1) return lyricArea.height * 0.4
+        return lyricArea.height * 0.5
     }
 
     function rollTo(p, c, n) {
@@ -80,19 +73,6 @@ PlasmoidItem {
         }
     }
 
-    function showTip() {
-        if (!root.hovered || (root.songTitle === "" && root.coverSource === "")) return
-        tipArea.showTooltip()
-        root.tooltipShown = true
-    }
-
-    function hideTip() {
-        if (root.tooltipShown) {
-            tipArea.hideTooltip()
-            root.tooltipShown = false
-        }
-    }
-
     function readMeta() {
         var xhr = new XMLHttpRequest()
         xhr.open("GET", "file:///tmp/lyrics-meta.json")
@@ -112,8 +92,6 @@ PlasmoidItem {
                         prevLine = p; lyric = t; nextLine = n
                         dPrev = p; dLyric = t; dNext = n
                     }
-                    songTitle = m.title || ""
-                    songArtist = m.artist || ""
                     position = m.position || 0
                     lineStart = m.line_start || 0
                     duration = m.duration || 0
@@ -158,192 +136,107 @@ PlasmoidItem {
         }
     }
 
-    // 悬浮提示：显式控制 Plasma 底层 tooltip（比 PlasmoidItem 内置属性可靠）
-    MouseArea {
-        id: hoverArea
-        anchors.fill: parent
-        hoverEnabled: true
-        acceptedButtons: Qt.NoButton
-        onEntered: {
-            root.hovered = true
-            tooltipDelay.start()
-        }
-        onExited: {
-            root.hovered = false
-            tooltipDelay.stop()
-            root.hideTip()
-        }
-    }
-
-    Timer {
-        id: tooltipDelay
-        interval: 350
-        onTriggered: root.showTip()
-    }
-
-    // 显式 ToolTipArea：不依赖外层 CompactApplet 的自动触发
-    PlasmaCore.ToolTipArea {
-        id: tipArea
-        anchors.fill: parent
-        active: true
-        mainText: root.songTitle
-        subText: root.songArtist
-        mainItem: tooltipContent
-    }
-
-    // tooltip 内容：封面 + 歌名/歌手/进度
-    Item {
-        id: tooltipContent
-        width: 190
-        height: Math.max(32, root.height)
-
-        RowLayout {
-            anchors.fill: parent
-            spacing: Kirigami.Units.smallSpacing * 2
-
-            Item {
-                // 封面高度略小于任务栏高度：跟随 widget 高度
-                Layout.preferredWidth: Math.max(32, root.height)
-                Layout.preferredHeight: Math.max(32, root.height)
-                Image {
-                    anchors.fill: parent
-                    source: root.coverSource
-                    fillMode: Image.PreserveAspectFit
-                    visible: root.coverSource !== ""
-                }
-                Rectangle {
-                    anchors.fill: parent
-                    color: Kirigami.Theme.backgroundColor
-                    visible: root.coverSource === ""
-                    PlasmaComponents3.Label {
-                        anchors.centerIn: parent
-                        text: "♪"
-                        font.pixelSize: Math.max(16, root.height * 0.4)
-                        color: Kirigami.Theme.textColor
-                    }
-                }
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 0
-
-                PlasmaComponents3.Label {
-                    Layout.fillWidth: true
-                    text: root.songTitle !== "" ? root.songTitle : "♪"
-                    font.bold: true
-                    elide: Text.ElideRight
-                    maximumLineCount: 1
-                }
-                PlasmaComponents3.Label {
-                    Layout.fillWidth: true
-                    text: root.songArtist
-                    opacity: 0.75
-                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize - 1
-                    elide: Text.ElideRight
-                    maximumLineCount: 1
-                    visible: text !== ""
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
-                    visible: root.duration > 0
-                    PlasmaComponents3.ProgressBar {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 4
-                        value: root.progress
-                    }
-                    PlasmaComponents3.Label {
-                        text: root.duration > 0
-                            ? Math.floor(root.progress * root.duration / 60) + ":" +
-                              String(Math.floor(root.progress * root.duration % 60)).padStart(2, "0") +
-                              " / " +
-                              Math.floor(root.duration / 60) + ":" +
-                              String(Math.floor(root.duration % 60)).padStart(2, "0")
-                            : ""
-                        opacity: 0.75
-                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize - 2
-                    }
-                }
-            }
-        }
-    }
-
     Item {
         id: view
         anchors.fill: parent
         clip: true
 
-        Column {
-            id: lyricsColumn
+        RowLayout {
+            id: mainRow
             anchors.fill: parent
-            spacing: 0
-            transform: Translate { id: roll; y: 0 }
+            spacing: Kirigami.Units.smallSpacing * 2
 
-            PlasmaComponents3.Label {
-                text: root.dPrev; width: parent.width; clip: true
-                height: root.dm === 3 ? parent.height * 0.5 : (root.dm === 1 ? parent.height * 0.3 : 0)
-                font.pixelSize: root.fs; font.italic: root.fi
-                color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.35)
-                elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                visible: root.dPrev !== "" && (root.dm === 1 || root.dm === 3)
+            // 封面：直接显示在 widget 上，高度略小于任务栏
+            Item {
+                id: coverItem
+                Layout.preferredWidth: Math.max(28, root.height - 4)
+                Layout.preferredHeight: Math.max(28, root.height - 4)
+                visible: root.coverSource !== ""
+                Image {
+                    anchors.fill: parent
+                    source: root.coverSource
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                }
             }
 
-            // 当前行：卡拉 OK 逐字点亮；无字符时间时回退为整行
             Item {
-                id: currentLine
-                width: parent.width
-                height: root.dm === 0 ? parent.height : (root.dm === 1 ? parent.height * 0.4 : parent.height * 0.5)
-                clip: true
+                id: lyricArea
+                Layout.fillWidth: true
+                Layout.fillHeight: true
 
-                PlasmaComponents3.Label {
-                    id: plainLabel
+                Column {
+                    id: lyricsColumn
                     anchors.fill: parent
-                    text: root.dLyric
-                    font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
-                    color: Kirigami.Theme.textColor
-                    elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                    visible: !root.karaoke
-                }
-
-                Row {
-                    visible: root.karaoke
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.verticalCenter: parent.verticalCenter
                     spacing: 0
-                    Repeater {
-                        model: root.karaoke ? root.lyricChars.length : 0
-                        delegate: Text {
-                            text: root.lyricChars[index]
-                            height: currentLine.height
+                    transform: Translate { id: roll; y: 0 }
+
+                    PlasmaComponents3.Label {
+                        text: root.dPrev; width: parent.width; clip: true
+                        height: root.dm === 3 ? parent.height * 0.5 : (root.dm === 1 ? parent.height * 0.3 : 0)
+                        font.pixelSize: root.fs; font.italic: root.fi
+                        color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.35)
+                        elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                        visible: root.dPrev !== "" && (root.dm === 1 || root.dm === 3)
+                    }
+
+                    // 当前行：卡拉 OK 逐字点亮（唱到的亮、未唱到的暗）；无字符时间时回退为整行
+                    Item {
+                        id: currentLine
+                        width: parent.width
+                        height: root.dm === 0 ? parent.height : (root.dm === 1 ? parent.height * 0.4 : parent.height * 0.5)
+                        clip: true
+
+                        PlasmaComponents3.Label {
+                            id: plainLabel
+                            anchors.fill: parent
+                            text: root.dLyric
                             font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
-                            color: root.lineElapsed >= root.charTimes[index]
-                                   ? Kirigami.Theme.highlightColor
-                                   : Kirigami.Theme.textColor
-                            verticalAlignment: Text.AlignVCenter
-                            Behavior on color { ColorAnimation { duration: 140 } }
+                            color: Kirigami.Theme.textColor
+                            elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                            visible: !root.karaoke
+                        }
+
+                        Row {
+                            visible: root.karaoke
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 0
+                            Repeater {
+                                model: root.karaoke ? root.lyricChars.length : 0
+                                delegate: Text {
+                                    text: root.lyricChars[index]
+                                    height: currentLine.height
+                                    font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
+                                    color: root.lineElapsed >= root.charTimes[index]
+                                           ? Kirigami.Theme.highlightColor
+                                           : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.42)
+                                    verticalAlignment: Text.AlignVCenter
+                                    Behavior on color { ColorAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                                }
+                            }
                         }
                     }
+
+                    PlasmaComponents3.Label {
+                        text: root.dNext; width: parent.width; clip: true
+                        height: root.dm === 2 ? parent.height * 0.5 : (root.dm === 1 ? parent.height * 0.3 : 0)
+                        font.pixelSize: root.fs; font.italic: root.fi
+                        color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.35)
+                        elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                        visible: root.dNext !== "" && (root.dm === 1 || root.dm === 2)
+                    }
+                }
+
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    width: parent.width * (root.progress > 0 ? root.progress : 0)
+                    height: 2
+                    color: Kirigami.Theme.highlightColor
+                    visible: root.sp && root.progress > 0
+                    Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutQuad } }
                 }
             }
-
-            PlasmaComponents3.Label {
-                text: root.dNext; width: parent.width; clip: true
-                height: root.dm === 2 ? parent.height * 0.5 : (root.dm === 1 ? parent.height * 0.3 : 0)
-                font.pixelSize: root.fs; font.italic: root.fi
-                color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.35)
-                elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                visible: root.dNext !== "" && (root.dm === 1 || root.dm === 2)
-            }
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width * (root.progress > 0 ? root.progress : 0)
-            height: 2
-            color: Kirigami.Theme.highlightColor
-            visible: root.sp && root.progress > 0
-            Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutQuad } }
         }
     }
 
