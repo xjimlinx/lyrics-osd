@@ -1035,13 +1035,11 @@ class LyricsBridge:
         # Cover art: download once per new URL, bump version for the widget.
         cover_url = song.get("cover", "")
         if cover_url and cover_url != self._cover_url:
-            path = _download_cover(cover_url)
-            if path:
-                self._cover_url = cover_url
-                self._cover_path = path
-                self._cover_ver += 1
-            else:
-                self._cover_url = ""
+            # Async: a slow cover CDN must not block lyric updates on fast
+            # track changes.
+            self._cover_url = cover_url
+            threading.Thread(target=self._fetch_cover_async,
+                             args=(cover_url,), daemon=True).start()
 
         use_krc = native or (
             source in ("lrclib_first", "netease_first") and not self.parsed_lrc
@@ -1077,6 +1075,14 @@ class LyricsBridge:
             line_start=line_start, char_times=char_times,
             cover=self._cover_path, cover_ver=self._cover_ver,
         ))
+
+    def _fetch_cover_async(self, url):
+        path = _download_cover(url)
+        if path:
+            self._cover_path = path
+            self._cover_ver += 1
+        else:
+            self._cover_url = ""  # allow retry on next message
 
     def _check_clear_cache(self):
         """Check if clearCache flag is set in plasmoid config."""
@@ -1339,16 +1345,16 @@ class LyricsBridge:
             self.parsed_lrc = []
             self.song_start_time = time.time() - position
 
-            # Write fallback immediately (new song title) — skip for native mode
+            # Write fallback immediately (new song title) so the widget reacts
+            # instantly; the real lyric line overwrites it moments later.
             source = read_plasmoid_lyrics_source()
-            if source != "native":
-                write_lyrics(f"{artist} - {title}")
-                write_meta(build_meta(
-                    f"{artist} - {title}", "", "", 0, 0,
-                    position=position, duration=duration, playing=playing,
-                    title=title, artist=artist,
-                    cover=self._cover_path, cover_ver=self._cover_ver,
-                ))
+            write_lyrics(f"{artist} - {title}" if title else "No lyrics")
+            write_meta(build_meta(
+                f"{artist} - {title}" if title else "No lyrics", "", "", 0, 0,
+                position=position, duration=duration, playing=playing,
+                title=title, artist=artist,
+                cover=self._cover_path, cover_ver=self._cover_ver,
+            ))
 
             # Background lyrics fetch (don't block the main loop)
             if not skip_fetch:

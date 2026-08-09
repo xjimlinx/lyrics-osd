@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import org.kde.plasma.plasmoid
+import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.components as PlasmaComponents3
 import org.kde.kirigami as Kirigami
 
@@ -23,11 +24,14 @@ PlasmoidItem {
     property bool fi: Plasmoid.configuration.fontItalic
     property bool sp: Plasmoid.configuration.showProgress
 
-    // 歌曲信息（悬浮提示用）
+    // 歌曲信息（悬浮提示与逐字推进用）
     property string songTitle: ""
     property string songArtist: ""
     property real position: 0
     property real lineStart: 0
+    property real duration: 0
+    property bool playing: false
+    property real metaTime: 0       // 最近一次 meta 读取的系统时间 (ms)
 
     // 卡拉 OK 逐字高亮
     property var lyricChars: []
@@ -40,32 +44,9 @@ PlasmoidItem {
     property int coverVer: 0
     property string coverSource: ""
 
-    // 悬浮提示：封面 + 歌名/歌手/进度（Plasma 内置 tooltip）
-    toolTipMainText: root.songTitle !== "" ? root.songTitle : ""
-    toolTipSubText: root.songArtist !== ""
-        ? root.songArtist + (root.progress > 0 ? "  ·  " + Math.round(root.progress * 100) + "%" : "")
-        : ""
-    toolTipItem: Item {
-        width: 160
-        height: 160
-        Image {
-            anchors.fill: parent
-            source: root.coverSource
-            fillMode: Image.PreserveAspectFit
-            visible: root.coverSource !== ""
-        }
-        Rectangle {
-            anchors.fill: parent
-            color: Kirigami.Theme.backgroundColor
-            visible: root.coverSource === ""
-            PlasmaComponents3.Label {
-                anchors.centerIn: parent
-                text: "♪"
-                font.pixelSize: 48
-                color: Kirigami.Theme.textColor
-            }
-        }
-    }
+    // 悬浮提示状态
+    property bool hovered: false
+    property bool tooltipShown: false
 
     function lineSlot() {
         if (view.height <= 0) return 0
@@ -99,6 +80,19 @@ PlasmoidItem {
         }
     }
 
+    function showTip() {
+        if (!root.hovered || (root.songTitle === "" && root.coverSource === "")) return
+        tipArea.showTooltip()
+        root.tooltipShown = true
+    }
+
+    function hideTip() {
+        if (root.tooltipShown) {
+            tipArea.hideTooltip()
+            root.tooltipShown = false
+        }
+    }
+
     function readMeta() {
         var xhr = new XMLHttpRequest()
         xhr.open("GET", "file:///tmp/lyrics-meta.json")
@@ -110,7 +104,6 @@ PlasmoidItem {
                     if (m.artist && t === m.title) t = m.artist + " - " + t
                     var p = m.prev_line || ""
                     var n = m.next_line || ""
-                    var pr = m.progress || 0
                     if (t !== lyric) {
                         prevLine = p; lyric = t; nextLine = n
                         buildChars(t, Array.isArray(m.char_times) ? m.char_times : [])
@@ -119,11 +112,13 @@ PlasmoidItem {
                         prevLine = p; lyric = t; nextLine = n
                         dPrev = p; dLyric = t; dNext = n
                     }
-                    progress = pr
                     songTitle = m.title || ""
                     songArtist = m.artist || ""
                     position = m.position || 0
                     lineStart = m.line_start || 0
+                    duration = m.duration || 0
+                    playing = !!m.playing
+                    metaTime = Date.now()
                     lineElapsed = Math.max(0, position - lineStart)
                     var cv = m.cover || ""
                     var cvVer = m.cover_ver || 0
@@ -138,7 +133,141 @@ PlasmoidItem {
         try { xhr.send() } catch(e) {}
     }
 
-    Timer { interval: 250; running: true; repeat: true; onTriggered: readMeta() }
+    // 低频率轮询 meta（本机文件，150ms 足够低）
+    Timer { interval: 150; running: true; repeat: true; onTriggered: readMeta() }
+
+    // 高频率播放推进：两次轮询之间按系统时间匀速推进，逐字/进度条连续无跳变
+    Timer {
+        id: advanceTimer
+        interval: 33
+        running: true
+        repeat: true
+        onTriggered: {
+            if (root.playing) {
+                var now = (Date.now() - root.metaTime) / 1000
+                root.lineElapsed = Math.max(0, root.position - root.lineStart + now)
+                if (root.duration > 0) {
+                    root.progress = Math.min(1, (root.position + now) / root.duration)
+                }
+            } else {
+                root.lineElapsed = Math.max(0, root.position - root.lineStart)
+                if (root.duration > 0) {
+                    root.progress = Math.min(1, root.position / root.duration)
+                }
+            }
+        }
+    }
+
+    // 悬浮提示：显式控制 Plasma 底层 tooltip（比 PlasmoidItem 内置属性可靠）
+    MouseArea {
+        id: hoverArea
+        anchors.fill: parent
+        hoverEnabled: true
+        acceptedButtons: Qt.NoButton
+        onEntered: {
+            root.hovered = true
+            tooltipDelay.start()
+        }
+        onExited: {
+            root.hovered = false
+            tooltipDelay.stop()
+            root.hideTip()
+        }
+    }
+
+    Timer {
+        id: tooltipDelay
+        interval: 350
+        onTriggered: root.showTip()
+    }
+
+    // 显式 ToolTipArea：不依赖外层 CompactApplet 的自动触发
+    PlasmaCore.ToolTipArea {
+        id: tipArea
+        anchors.fill: parent
+        active: true
+        mainText: root.songTitle
+        subText: root.songArtist
+        mainItem: tooltipContent
+    }
+
+    // tooltip 内容：封面 + 歌名/歌手/进度
+    Item {
+        id: tooltipContent
+        width: 190
+        height: Math.max(32, root.height)
+
+        RowLayout {
+            anchors.fill: parent
+            spacing: Kirigami.Units.smallSpacing * 2
+
+            Item {
+                // 封面高度略小于任务栏高度：跟随 widget 高度
+                Layout.preferredWidth: Math.max(32, root.height)
+                Layout.preferredHeight: Math.max(32, root.height)
+                Image {
+                    anchors.fill: parent
+                    source: root.coverSource
+                    fillMode: Image.PreserveAspectFit
+                    visible: root.coverSource !== ""
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    color: Kirigami.Theme.backgroundColor
+                    visible: root.coverSource === ""
+                    PlasmaComponents3.Label {
+                        anchors.centerIn: parent
+                        text: "♪"
+                        font.pixelSize: Math.max(16, root.height * 0.4)
+                        color: Kirigami.Theme.textColor
+                    }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    text: root.songTitle !== "" ? root.songTitle : "♪"
+                    font.bold: true
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
+                }
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    text: root.songArtist
+                    opacity: 0.75
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize - 1
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
+                    visible: text !== ""
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Kirigami.Units.smallSpacing
+                    visible: root.duration > 0
+                    PlasmaComponents3.ProgressBar {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 4
+                        value: root.progress
+                    }
+                    PlasmaComponents3.Label {
+                        text: root.duration > 0
+                            ? Math.floor(root.progress * root.duration / 60) + ":" +
+                              String(Math.floor(root.progress * root.duration % 60)).padStart(2, "0") +
+                              " / " +
+                              Math.floor(root.duration / 60) + ":" +
+                              String(Math.floor(root.duration % 60)).padStart(2, "0")
+                            : ""
+                        opacity: 0.75
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize - 2
+                    }
+                }
+            }
+        }
+    }
 
     Item {
         id: view
@@ -192,7 +321,7 @@ PlasmoidItem {
                                    ? Kirigami.Theme.highlightColor
                                    : Kirigami.Theme.textColor
                             verticalAlignment: Text.AlignVCenter
-                            Behavior on color { ColorAnimation { duration: 160 } }
+                            Behavior on color { ColorAnimation { duration: 140 } }
                         }
                     }
                 }
