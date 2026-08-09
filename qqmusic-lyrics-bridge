@@ -41,6 +41,7 @@ DEBUG_PORT = 9223
 MOEKOE_WS_PORT = 6520
 LYRICS_FILE = "/tmp/lyrics-current.txt"
 META_FILE = "/tmp/lyrics-meta.json"
+COVER_FILE = "/tmp/lyrics-cover.jpg"
 CACHE_DIR = os.path.expanduser("~/.cache/lyrics-osd")
 _current_album = ""
 _MSG_IDS = itertools.count(1)
@@ -96,6 +97,33 @@ def http_get(url, params=None, timeout=None, headers=None):
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         return _HttpResp(e.code, body, url)
+
+
+def _download_cover(url):
+    """Download a cover image (binary) to COVER_FILE with an atomic rename.
+
+    Returns the local path on success, "" on any failure. Uses the same
+    opener as http_get so the configured proxy is honored.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return ""
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
+        )
+        opener = _HTTP_OPENER or urllib.request.build_opener()
+        with opener.open(req, timeout=8) as resp:
+            data = resp.read()
+        if not data:
+            return ""
+        tmp = COVER_FILE + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.rename(tmp, COVER_FILE)
+        return COVER_FILE
+    except Exception as e:
+        log.debug(f"cover download error: {e}")
+        return ""
 
 
 # ─── Minimal WebSocket client (RFC 6455, client side) ────────────────────
@@ -540,7 +568,11 @@ def _fetch_via_direct(title, artist, headers):
 
 
 def parse_lrc(lrc_text):
-    """Parse LRC format: [mm:ss.xx]text -> [(time_sec, text), ...] sorted."""
+    """Parse LRC format: [mm:ss.xx]text -> [(time_sec, text, []), ...] sorted.
+
+    Returns the same (time, text, chars) triple shape as parse_krc(); LRC has
+    no character-level timings, so chars is always empty.
+    """
     lines = []
     pattern = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\](.*)")
     for line in lrc_text.strip().split("\n"):
@@ -550,7 +582,7 @@ def parse_lrc(lrc_text):
             secs = float(m.group(2))
             text = m.group(3).strip()
             if text:
-                lines.append((mins * 60 + secs, text))
+                lines.append((mins * 60 + secs, text, []))
     lines.sort()
     return lines
 
@@ -558,15 +590,16 @@ def parse_lrc(lrc_text):
 def parse_krc(krc_text):
     """Parse KRC format (MoeKoeMusic / KuGou): [start_ms,duration_ms]text.
 
-    Character-level tags like <0,120,0>字 are stripped. Returns the same
-    [(time_sec, text), ...] shape as parse_lrc so the rest of the bridge
-    can use get_current_line() unchanged.
+    Returns [(time_sec, text, chars), ...] where chars is a list of
+    (char_block, start_sec, end_sec) triples with absolute timestamps.
+    Lines without character-level tags get an empty chars list.
     """
     if not krc_text:
         return []
     lines = []
     offset_ms = 0
     pattern = re.compile(r"^\[(\d+),(\d+)\](.*)$")
+    char_re = re.compile(r"<(\d+),(\d+),\d+>([^<]+)")
     for raw in krc_text.splitlines():
         line = raw.strip()
         if not line:
@@ -581,9 +614,54 @@ def parse_krc(krc_text):
         start_ms = int(m.group(1)) + offset_ms
         text = re.sub(r"<\d+,\d+,\d+>", "", m.group(3)).strip()
         if text:
-            lines.append((start_ms / 1000.0, text))
+            chars = _expand_krc_chars(m.group(3), start_ms, int(m.group(2)))
+            lines.append((start_ms / 1000.0, text, chars))
     lines.sort()
     return lines
+
+
+def _expand_krc_chars(content, start_ms, line_dur_ms):
+    """Expand a KRC line into one (char, start_sec, end_sec) per character.
+
+    Tagged blocks contribute their own timings; untagged gaps (rare) are
+    spread evenly between the neighbouring tagged blocks so the resulting
+    list always matches the visible text length.
+    """
+    chars = []
+    line_start = start_ms / 1000.0
+    line_end = (start_ms + line_dur_ms) / 1000.0
+    char_re = re.compile(r"<(\d+),(\d+),\d+>([^<]+)")
+    matches = list(char_re.finditer(content))
+
+    def spread(frag, frag_start, frag_end):
+        n = len(frag)
+        for i in range(n):
+            if n > 1:
+                s = frag_start + (frag_end - frag_start) * i / n
+                e = frag_start + (frag_end - frag_start) * (i + 1) / n
+            else:
+                s, e = frag_start, frag_end
+            chars.append((frag[i], round(s, 3), round(e, 3)))
+
+    if not matches:
+        spread(content, line_start, line_end)
+        return chars
+
+    cursor = 0
+    prev_end = line_start
+    for cm in matches:
+        off = int(cm.group(1))
+        dur = int(cm.group(2))
+        block_start = (start_ms + off) / 1000.0
+        block_end = block_start + dur / 1000.0
+        if cm.start() > cursor:
+            spread(content[cursor:cm.start()], prev_end, block_start)
+        spread(cm.group(3), block_start, block_end)
+        prev_end = block_end
+        cursor = cm.end()
+    if cursor < len(content):
+        spread(content[cursor:], prev_end, line_end)
+    return chars
 
 
 def get_current_line(parsed_lrc, position):
@@ -591,7 +669,7 @@ def get_current_line(parsed_lrc, position):
     if not parsed_lrc:
         return ""
     current = parsed_lrc[0][1]
-    for ts, text in parsed_lrc:
+    for ts, text, _ in parsed_lrc:
         if ts <= position:
             current = text
         else:
@@ -616,14 +694,28 @@ def write_meta(info):
     os.rename(tmp, META_FILE)
 
 
+def build_meta(current_line, prev_line, next_line, current_idx, progress,
+               position=0.0, duration=0.0, playing=False, total_lines=0,
+               title="", artist="", line_start=0.0, char_times=None,
+               cover="", cover_ver=0):
+    """Build the /tmp/lyrics-meta.json dict with a stable field set."""
+    return {
+        "title": title, "artist": artist, "position": position,
+        "duration": duration, "playing": playing, "total_lines": total_lines,
+        "current_line": current_line, "prev_line": prev_line,
+        "next_line": next_line, "current_idx": current_idx,
+        "progress": progress, "line_start": line_start,
+        "char_times": char_times or [], "cover": cover, "cover_ver": cover_ver,
+    }
+
+
 def write_no_song():
     """Clear both output files so the widget stops showing the old song."""
     write_lyrics("No song detected")
-    write_meta({
-        "title": "", "artist": "", "position": 0, "duration": 0,
-        "playing": False, "total_lines": 0, "current_line": "No song detected",
-        "prev_line": "", "next_line": "", "current_idx": 0, "progress": 0,
-    })
+    write_meta(build_meta(
+        "No song detected", "", "", 0, 0,
+        title="", artist="", duration=0, total_lines=0,
+    ))
 
 
 # ─── Shared config ────────────────────────────────────────────────────────
@@ -791,6 +883,9 @@ class LyricsBridge:
         self._moekoe_playing = False
         self._moekoe_time = 0.0
         self._moekoe_logged = False
+        self._cover_url = ""
+        self._cover_path = ""
+        self._cover_ver = 0
 
     def _connect_lyric_ws(self):
         """Open WS connection to lyric.html for real-time lyrics."""
@@ -892,6 +987,7 @@ class LyricsBridge:
                     "duration": _to_float(data.get("duration")),
                     "playing": True,
                     "album": str(song.get("album") or "").strip(),
+                    "cover": str(song.get("img") or "").strip(),
                     "krc": str(data.get("lyricsData") or ""),
                 }
             elif msg_type == "playerState" and isinstance(data, dict):
@@ -936,6 +1032,17 @@ class LyricsBridge:
         native = source in ("native", "both")
         self._handle_song(song, skip_fetch=native)
 
+        # Cover art: download once per new URL, bump version for the widget.
+        cover_url = song.get("cover", "")
+        if cover_url and cover_url != self._cover_url:
+            path = _download_cover(cover_url)
+            if path:
+                self._cover_url = cover_url
+                self._cover_path = path
+                self._cover_ver += 1
+            else:
+                self._cover_url = ""
+
         use_krc = native or (
             source in ("lrclib_first", "netease_first") and not self.parsed_lrc
         )
@@ -950,26 +1057,26 @@ class LyricsBridge:
 
         prev_line = next_line = ""
         current_idx = 0
-        for idx, (ts, text) in enumerate(self.parsed_lrc):
+        line_start = 0.0
+        char_times = []
+        for idx, (ts, text, chars) in enumerate(self.parsed_lrc):
             if ts <= self.position:
                 prev_line = "" if idx == 0 else self.parsed_lrc[idx - 1][1]
                 next_line = self.parsed_lrc[idx + 1][1] if idx + 1 < len(self.parsed_lrc) else ""
                 current_idx = idx
+                line_start = ts
+                char_times = [round(c[1] - ts, 3) for c in chars]
             else:
                 break
-        write_meta({
-            "title": self.current_title,
-            "artist": self.current_artist,
-            "position": self.position,
-            "duration": self.current_duration,
-            "playing": self.playing,
-            "total_lines": len(self.parsed_lrc),
-            "current_line": line,
-            "prev_line": prev_line,
-            "next_line": next_line,
-            "current_idx": current_idx,
-            "progress": round(self.position / self.current_duration, 3) if self.current_duration > 0 else 0,
-        })
+        write_meta(build_meta(
+            line, prev_line, next_line, current_idx,
+            round(self.position / self.current_duration, 3) if self.current_duration > 0 else 0,
+            position=self.position, duration=self.current_duration,
+            playing=self.playing, total_lines=len(self.parsed_lrc),
+            title=self.current_title, artist=self.current_artist,
+            line_start=line_start, char_times=char_times,
+            cover=self._cover_path, cover_ver=self._cover_ver,
+        ))
 
     def _check_clear_cache(self):
         """Check if clearCache flag is set in plasmoid config."""
@@ -1236,11 +1343,12 @@ class LyricsBridge:
             source = read_plasmoid_lyrics_source()
             if source != "native":
                 write_lyrics(f"{artist} - {title}")
-                write_meta({
-                    "title": title, "artist": artist,
-                    "position": position, "duration": duration,
-                    "playing": playing, "total_lines": 0,
-                })
+                write_meta(build_meta(
+                    f"{artist} - {title}", "", "", 0, 0,
+                    position=position, duration=duration, playing=playing,
+                    title=title, artist=artist,
+                    cover=self._cover_path, cover_ver=self._cover_ver,
+                ))
 
             # Background lyrics fetch (don't block the main loop)
             if not skip_fetch:
@@ -1270,28 +1378,27 @@ class LyricsBridge:
             prev_line = ""
             next_line = ""
             current_idx = 0
-            for idx, (ts, text) in enumerate(self.parsed_lrc):
+            line_start = 0.0
+            char_times = []
+            for idx, (ts, text, chars) in enumerate(self.parsed_lrc):
                 if ts <= self.position:
                     prev_line = "" if idx == 0 else self.parsed_lrc[idx - 1][1] if idx > 0 else ""
                     next_line = self.parsed_lrc[idx + 1][1] if idx + 1 < len(self.parsed_lrc) else ""
                     current_idx = idx
+                    line_start = ts
+                    char_times = [round(c[1] - ts, 3) for c in chars]
                 else:
                     break
 
             progress = self.position / duration if duration > 0 else 0
-            write_meta({
-                "title": self.current_title,
-                "artist": self.current_artist,
-                "position": self.position,
-                "duration": duration,
-                "playing": self.playing,
-                "total_lines": len(self.parsed_lrc),
-                "current_line": line,
-                "prev_line": prev_line,
-                "next_line": next_line,
-                "current_idx": current_idx,
-                "progress": round(progress, 3),
-            })
+            write_meta(build_meta(
+                line, prev_line, next_line, current_idx, round(progress, 3),
+                position=self.position, duration=duration,
+                playing=self.playing, total_lines=len(self.parsed_lrc),
+                title=self.current_title, artist=self.current_artist,
+                line_start=line_start, char_times=char_times,
+                cover=self._cover_path, cover_ver=self._cover_ver,
+            ))
 
     def _fetch_lyrics_async(self, title, artist, album=""):
         """Background lyrics fetch. Updates parsed_lrc when done."""

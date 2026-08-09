@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.0] - 2026-08-10
+
+### Added
+- 卡拉 OK 逐字高亮：KRC 字符级时间戳不再丢弃，当前行歌词逐字点亮（带颜色过渡动画）
+- 悬浮提示：鼠标悬停显示专辑封面、歌名、歌手与播放进度（MoeKoeMusic 封面自动下载）
+
+### Changed
+- `parse_krc` 保留字符级时间轴，返回 `(time, text, chars)` 结构；无字符时间的 LRC/原生歌词自动回退为整行显示
+- `/tmp/lyrics-meta.json` 新增 `char_times`、`line_start`、`cover`、`cover_ver` 字段
+
 ## [0.6.1] - 2026-08-10
 
 ### Changed
