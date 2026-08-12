@@ -725,13 +725,35 @@ _PLASMOID_CFG_PATH = os.path.expanduser(
 )
 _PLASMOID_ID = "com.github.xein.lyrics-osd"
 
+# Cache the parsed appletsrc: it can have hundreds of sections and the main
+# loop reads it every iteration. Re-parse at most once per second (or when
+# the file changes) so config changes still take effect promptly.
+_CFG_CACHE = {"cfg": None, "key": None, "at": 0.0}
+_CFG_CACHE_TTL = 1.0
+
+
+def _load_plasmoid_cfg():
+    """Return the parsed appletsrc, re-parsing at most once per second."""
+    try:
+        st = os.stat(_PLASMOID_CFG_PATH)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        key = None
+    now = time.time()
+    c = _CFG_CACHE
+    if c["cfg"] is not None and key == c["key"] and now - c["at"] < _CFG_CACHE_TTL:
+        return c["cfg"]
+    cfg = configparser.ConfigParser()
+    cfg.read(_PLASMOID_CFG_PATH)
+    c.update({"cfg": cfg, "key": key, "at": now})
+    return cfg
+
 
 def _find_general_section(cfg=None):
     """Return the lyrics-osd applet's Configuration/General section name, or None."""
     try:
         if cfg is None:
-            cfg = configparser.ConfigParser()
-            cfg.read(_PLASMOID_CFG_PATH)
+            cfg = _load_plasmoid_cfg()
         applet_id = None
         for sec in cfg.sections():
             if cfg.has_option(sec, "plugin") and cfg.get(sec, "plugin") == _PLASMOID_ID:
@@ -752,8 +774,7 @@ def _find_general_section(cfg=None):
 def _read_general_option(key, default=None):
     """Read one General option from the lyrics-osd applet config."""
     try:
-        cfg = configparser.ConfigParser()
-        cfg.read(_PLASMOID_CFG_PATH)
+        cfg = _load_plasmoid_cfg()
         sec = _find_general_section(cfg)
         if sec and cfg.has_option(sec, key):
             return cfg.get(sec, key)
@@ -882,6 +903,8 @@ class LyricsBridge:
         self._moekoe_ws = None
         self._moekoe_playing = False
         self._moekoe_time = 0.0
+        self._moekoe_position = 0.0
+        self._moekoe_pos_time = 0
         self._moekoe_logged = False
         self._cover_url = ""
         self._cover_path = ""
@@ -941,7 +964,9 @@ class LyricsBridge:
             ws = WebSocket.connect(
                 f"ws://127.0.0.1:{self.moekoe_port}/", timeout=5
             )
-            ws.settimeout(0.25)
+            # Short socket timeout keeps the steady-refresh loop responsive;
+            # gaps between messages are bridged by wall-clock extrapolation.
+            ws.settimeout(0.05)
             return ws
         except Exception as e:
             log.debug(f"moekoe connect error: {e}")
@@ -961,7 +986,7 @@ class LyricsBridge:
         if not ws:
             return None
         info = None
-        deadline = time.time() + 0.25
+        deadline = time.time() + 0.06
         while time.time() < deadline:
             try:
                 raw = ws.recv()
@@ -979,6 +1004,8 @@ class LyricsBridge:
             if msg_type == "lyrics" and isinstance(data, dict):
                 # MoeKoeMusic only streams lyrics while playing.
                 self._moekoe_playing = True
+                self._moekoe_position = _to_float(data.get("currentTime"))
+                self._moekoe_pos_time = time.time()
                 song = data.get("currentSong") or {}
                 info = {
                     "title": str(song.get("name") or "").strip(),
@@ -992,12 +1019,13 @@ class LyricsBridge:
                 }
             elif msg_type == "playerState" and isinstance(data, dict):
                 self._moekoe_playing = bool(data.get("isPlaying", False))
-                self._moekoe_time = _to_float(data.get("currentTime"))
+                self._moekoe_position = _to_float(data.get("currentTime"))
+                self._moekoe_pos_time = time.time()
                 if info is None and self.current_title:
                     info = {
                         "title": self.current_title,
                         "artist": self.current_artist,
-                        "position": self._moekoe_time,
+                        "position": self._moekoe_position,
                         "duration": self.current_duration,
                         "playing": self._moekoe_playing,
                         "album": "",
@@ -1009,7 +1037,7 @@ class LyricsBridge:
         return info
 
     def _run_moekoe(self):
-        """MoeKoeMusic backend: event-driven via its WebSocket API."""
+        """MoeKoeMusic backend: WS events + steady extrapolated meta refresh."""
         if not self._moekoe_ws:
             self._moekoe_ws = self._moekoe_connect()
             if not self._moekoe_ws:
@@ -1019,35 +1047,52 @@ class LyricsBridge:
                 return
 
         song = self._moekoe_recv()
-        if not song or not song.get("title"):
-            if not self.current_title:
+        if song and song.get("title"):
+            krc = song.pop("krc", "")
+            source = read_plasmoid_lyrics_source()
+            # MoeKoeMusic ships its own synced lyrics (KRC); treat "native"
+            # and "both" as KRC, and use KRC as the fallback for "first" modes.
+            native = source in ("native", "both")
+            self._handle_song(song, skip_fetch=native)
+
+            # Cover art: download once per new URL, bump version for the widget.
+            cover_url = song.get("cover", "")
+            if cover_url and cover_url != self._cover_url:
+                # Async: a slow cover CDN must not block lyric updates on fast
+                # track changes.
+                self._cover_url = cover_url
+                threading.Thread(target=self._fetch_cover_async,
+                                 args=(cover_url,), daemon=True).start()
+
+            use_krc = native or (
+                source in ("lrclib_first", "netease_first") and not self.parsed_lrc
+            )
+            if use_krc and krc:
+                self.parsed_lrc = parse_krc(krc)
+
+            # Anchor position extrapolation to the freshest reported time so
+            # the steady refresh below stays in sync between WS messages.
+            self._moekoe_position = self.position
+            self._moekoe_pos_time = time.time()
+            self._moekoe_playing = self.playing
+
+        if not self.current_title and not self.parsed_lrc:
+            if not song or not song.get("title"):
                 write_no_song()
-            _stop.wait(0.05)
+            _stop.wait(0.1)
             return
 
-        krc = song.pop("krc", "")
-        source = read_plasmoid_lyrics_source()
-        # MoeKoeMusic ships its own synced lyrics (KRC); treat "native" and
-        # "both" as KRC, and use KRC as the fallback for "first" modes.
-        native = source in ("native", "both")
-        self._handle_song(song, skip_fetch=native)
+        # Steady refresh: between WS messages, advance position with the wall
+        # clock. Line switches and karaoke then track actual playback instead
+        # of waiting for the next lyrics message (~270ms cadence).
+        if self._moekoe_playing and self._moekoe_pos_time:
+            age = time.time() - self._moekoe_pos_time
+            # Cap extrapolation: if the app stops pushing messages while
+            # playing, re-sync from the next message instead of drifting.
+            self.position = self._moekoe_position + min(age, 1.5)
+        else:
+            self.position = self._moekoe_position
 
-        # Cover art: download once per new URL, bump version for the widget.
-        cover_url = song.get("cover", "")
-        if cover_url and cover_url != self._cover_url:
-            # Async: a slow cover CDN must not block lyric updates on fast
-            # track changes.
-            self._cover_url = cover_url
-            threading.Thread(target=self._fetch_cover_async,
-                             args=(cover_url,), daemon=True).start()
-
-        use_krc = native or (
-            source in ("lrclib_first", "netease_first") and not self.parsed_lrc
-        )
-        if use_krc and krc:
-            self.parsed_lrc = parse_krc(krc)
-
-        # Write current line + meta (native mode skips writes inside _handle_song)
         line = get_current_line(self.parsed_lrc, self.position)
         if not line:
             line = f"{self.current_artist} - {self.current_title}" if self.current_title else "No lyrics"
@@ -1070,11 +1115,14 @@ class LyricsBridge:
             line, prev_line, next_line, current_idx,
             round(self.position / self.current_duration, 3) if self.current_duration > 0 else 0,
             position=self.position, duration=self.current_duration,
-            playing=self.playing, total_lines=len(self.parsed_lrc),
+            playing=self._moekoe_playing, total_lines=len(self.parsed_lrc),
             title=self.current_title, artist=self.current_artist,
             line_start=line_start, char_times=char_times,
             cover=self._cover_path, cover_ver=self._cover_ver,
         ))
+
+        # Steady cadence: honor the configured refresh interval.
+        _stop.wait(max(0.05, self.interval / 1000.0))
 
     def _fetch_cover_async(self, url):
         path = _download_cover(url)
@@ -1087,8 +1135,7 @@ class LyricsBridge:
     def _check_clear_cache(self):
         """Check if clearCache flag is set in plasmoid config."""
         try:
-            cfg = configparser.ConfigParser()
-            cfg.read(_PLASMOID_CFG_PATH)
+            cfg = _load_plasmoid_cfg()
             sec = _find_general_section(cfg)
             if sec and cfg.has_option(sec, "clearCache") and cfg.getboolean(sec, "clearCache"):
                 log.info("Clearing lyrics cache...")
@@ -1098,6 +1145,7 @@ class LyricsBridge:
                 cfg.set(sec, "clearCache", "false")
                 with open(_PLASMOID_CFG_PATH, "w") as f:
                     cfg.write(f)
+                _CFG_CACHE["cfg"] = None  # invalidate; file just changed
                 log.info(f"Cache cleared ({CACHE_DIR})")
         except Exception as e:
             log.debug(f"clear cache error: {e}")
@@ -1264,7 +1312,7 @@ class LyricsBridge:
                     if not self._connect_cdp():
                         if not self.current_title:
                             write_no_song()
-                        _stop.wait(0.3)
+                        _stop.wait(max(0.05, self.interval / 1000.0))
                         continue
 
                 # Ensure lyric page connection (only for native source)
@@ -1303,14 +1351,14 @@ class LyricsBridge:
                             })
                 elif not self.current_title:
                     write_no_song()
-                    _stop.wait(0.3)
+                    _stop.wait(max(0.05, self.interval / 1000.0))
                 else:
                     # Already showing a song, just retry faster
-                    _stop.wait(0.3)
+                    _stop.wait(max(0.05, self.interval / 1000.0))
             except Exception as e:
                 log.error(f"Error: {e}")
                 self._close_ws()
-                _stop.wait(0.3)
+                _stop.wait(max(0.05, self.interval / 1000.0))
 
     def _handle_song(self, song, skip_fetch=False):
         global _current_album

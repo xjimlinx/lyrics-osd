@@ -133,8 +133,8 @@ PlasmoidItem {
         try { xhr.send() } catch(e) {}
     }
 
-    // 低频率轮询 meta（本机文件，150ms 足够低）
-    Timer { interval: 150; running: true; repeat: true; onTriggered: readMeta() }
+    // 轮询 meta（本机文件，60ms 几乎无开销，换行更跟手）
+    Timer { interval: 60; running: true; repeat: true; onTriggered: readMeta() }
 
     // 高频率播放推进：两次轮询之间按系统时间匀速推进，逐字/进度条连续无跳变
     Timer {
@@ -268,7 +268,7 @@ PlasmoidItem {
         property: "y"
         from: root.lineSlot()
         to: 0
-        duration: 220
+        duration: 150
         easing.type: Easing.OutCubic
     }
 }
