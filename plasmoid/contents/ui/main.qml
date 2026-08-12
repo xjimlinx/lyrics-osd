@@ -17,7 +17,8 @@ PlasmoidItem {
     property string dPrev: ""
     property string dNext: ""
     property real progress: 0
-    property int dm: Plasmoid.configuration.displayMode
+    // 显示行数与歌词变体合并为一个设置：0-4 为单/双行（dm=0），5=三行（dm=1）
+    property int dm: root.variant === 5 ? 1 : 0
     property int fs: Plasmoid.configuration.fontPixelSize
     property int variant: Plasmoid.configuration.lyricsVariant
     property int fw: Plasmoid.configuration.fontBold ? Font.Bold : Font.Normal
@@ -35,6 +36,7 @@ PlasmoidItem {
     // 歌曲信息（封面与逐字推进用）
     property real position: 0
     property real lineStart: 0
+    property real lineEnd: 0
     property real duration: 0
     property bool playing: false
     property real metaTime: 0       // 最近一次 meta 读取的系统时间 (ms)
@@ -42,6 +44,7 @@ PlasmoidItem {
     // 卡拉 OK 逐字高亮
     property var lyricChars: []
     property var charTimes: []
+    property var charDurs: []
     property bool karaoke: root.karaokeMode
                           && root.charTimes.length === root.lyricChars.length
                           && root.lyricChars.length > 0
@@ -59,6 +62,11 @@ PlasmoidItem {
         return lyricArea.height * 0.5
     }
 
+    function rowFont(frac) {
+        // 按行高自动缩小字号：min(设置字号, 行高×0.88)，多行时不会互相挤压
+        return Math.max(8, Math.min(root.fs, Math.floor(root.height * frac * 0.88)))
+    }
+
     function rollTo(p, c, n) {
         // Player-style roll: new content starts one slot below and slides up.
         dPrev = p; dLyric = c; dNext = n
@@ -72,30 +80,75 @@ PlasmoidItem {
     }
 
     function buildChars(text, times) {
-        // 只有字符时间戳与正文等长时才逐字；karaoke 为绑定，配置改动即时生效
+        // 只有字符时间戳与正文等长时才逐字；karaoke 为绑定，配置改动即时生效。
+        // times 为相对行首的起始时间；durs 为该字持续时长，缺失时按后一字时间差派生。
+        var durs = arguments.length > 2 ? arguments[2] : null
         lyricChars = text.split("")
-        charTimes = (times && times.length === lyricChars.length) ? times : []
+        var ok = Array.isArray(times) && times.length === lyricChars.length
+        charTimes = ok ? times : []
+        if (ok) {
+            if (Array.isArray(durs) && durs.length === lyricChars.length) {
+                charDurs = durs
+            } else {
+                var dd = []
+                for (var i = 0; i < times.length - 1; i++) dd.push(Math.max(0.03, times[i + 1] - times[i]))
+                dd.push(0.15)
+                charDurs = dd
+            }
+            // KRC 逐字时间常早于下一行开始：按行时长适度整体拉伸扫光，
+            // 避免扫光提前结束后整行长时间全亮（限制拉伸幅度，极端间隔保持原样）
+            if (root.lineEnd > root.lineStart && charTimes.length > 0) {
+                var lineDur = root.lineEnd - root.lineStart
+                var lastEnd = charTimes[charTimes.length - 1] + charDurs[charDurs.length - 1]
+                var factor = lineDur / lastEnd
+                if (factor > 1.12 && factor < 2.2) {
+                    for (var k = 0; k < charTimes.length; k++) {
+                        charTimes[k] = Math.round(charTimes[k] * factor * 1000) / 1000
+                        charDurs[k] = Math.round(charDurs[k] * factor * 1000) / 1000
+                    }
+                }
+            }
+        } else {
+            charDurs = []
+        }
     }
 
-    function charColor(i) {
-        // 每个字在它自己的时间点前后平滑渐亮：暗色 → 高亮色（120ms）
-        if (!root.karaoke || i >= root.charTimes.length) return Kirigami.Theme.textColor
+    function dimColor() {
         var base = Kirigami.Theme.textColor
-        var dark = Qt.rgba(base.r, base.g, base.b, 0.42)
-        var hl = Kirigami.Theme.highlightColor
-        var t = (root.lineElapsed - root.charTimes[i]) / 0.12
-        t = Math.max(0, Math.min(1, t))
-        if (t >= 1) return hl
-        return Qt.rgba(
-            dark.r + (hl.r - dark.r) * t,
-            dark.g + (hl.g - dark.g) * t,
-            dark.b + (hl.b - dark.b) * t,
-            dark.a + (hl.a - dark.a) * t
-        )
+        return Qt.rgba(base.r, base.g, base.b, 0.42)
+    }
+
+    function charFill(i) {
+        // 每个字的扫光进度：按它自己的起止时间 0→1 连续填充（0=暗，1=高亮）
+        if (!root.karaoke || i >= root.charTimes.length) return 1
+        var d = root.charDurs[i] || 0.15
+        var f = (root.lineElapsed - root.charTimes[i]) / d
+        return Math.max(0, Math.min(1, f))
+    }
+
+    function lineFill() {
+        // 整行扫光位置：当前字序号 + 字内填充 → 0..1 连续值。
+        // 边缘正好落在正在唱的字上（一半亮一半暗），按每字的实际时长推进
+        if (!root.karaoke || root.charTimes.length === 0) return 0
+        var i = 0
+        while (i < root.charTimes.length - 1 && root.lineElapsed >= root.charTimes[i + 1]) i++
+        var f = root.charFill(i)
+        return (i + f) / root.charTimes.length
+    }
+
+    function subLyricText() {
+        // 双行模式的副行：变体 3=翻译，4=音译
+        if (root.variant === 3) return root.tlLyric
+        if (root.variant === 4) return root.romLyric
+        return ""
+    }
+
+    function subVisible() {
+        return (root.variant === 3 || root.variant === 4) && subLyricText() !== ""
     }
 
     function variantText(base, tl, rom) {
-        // 变体选择：1=翻译，2=音译；缺失时回退原词
+        // 单行模式：变体 1=翻译，2=音译；缺失时回退原词
         if (root.variant === 1 && tl) return tl
         if (root.variant === 2 && rom) return rom
         return base
@@ -133,31 +186,37 @@ PlasmoidItem {
                     romLyric = m.rom_line || ""
                     romPrev = m.rom_prev || ""
                     romNext = m.rom_next || ""
+                    lineStart = m.line_start || 0
+                    lineEnd = m.line_end || 0
+                    var origChars = Array.isArray(m.char_times) ? m.char_times : []
+                    var origDurs = Array.isArray(m.char_durs) ? m.char_durs : []
                     var disp = variantText(t, tlLyric, romLyric)
                     var dispP = variantText(p, tlPrev, romPrev)
                     var dispN = variantText(n, tlNext, romNext)
+                    var charsText = t
+                    var charsTimes = origChars
+                    var charsDurs = origDurs
+                    if (root.variant === 1 && tlLyric) {
+                        charsText = tlLyric
+                        charsTimes = mapCharTimes(origChars, t, tlLyric)
+                        charsDurs = null
+                    } else if (root.variant === 2 && romLyric) {
+                        charsText = romLyric
+                        charsTimes = mapCharTimes(origChars, t, romLyric)
+                        charsDurs = null
+                    }
                     if (t !== lyric) {
                         prevLine = p; lyric = t; nextLine = n
-                        var origChars = Array.isArray(m.char_times) ? m.char_times : []
-                        if (root.variant === 1 && tlLyric) {
-                            buildChars(tlLyric, mapCharTimes(origChars, t, tlLyric))
-                        } else if (root.variant === 2 && romLyric) {
-                            buildChars(romLyric, mapCharTimes(origChars, t, romLyric))
-                        } else {
-                            buildChars(t, origChars)
-                        }
+                        buildChars(charsText, charsTimes, charsDurs)
                         rollTo(dispP, disp, dispN)
                     } else {
                         prevLine = p; lyric = t; nextLine = n
                         dPrev = dispP; dLyric = disp; dNext = dispN
-                        if (root.variant === 1 && tlLyric) {
-                            buildChars(tlLyric, mapCharTimes(m.char_times, t, tlLyric))
-                        } else if (root.variant === 2 && romLyric) {
-                            buildChars(romLyric, mapCharTimes(m.char_times, t, romLyric))
+                        if (root.variant === 1 || root.variant === 2) {
+                            buildChars(charsText, charsTimes, charsDurs)
                         }
                     }
                     position = m.position || 0
-                    lineStart = m.line_start || 0
                     duration = m.duration || 0
                     playing = !!m.playing
                     metaTime = Date.now()
@@ -247,7 +306,7 @@ PlasmoidItem {
                     PlasmaComponents3.Label {
                         text: root.dPrev; width: parent.width; clip: true
                         height: root.dm === 3 ? parent.height * 0.5 : (root.dm === 1 ? parent.height * 0.3 : 0)
-                        font.pixelSize: root.fs; font.italic: root.fi
+                        font.pixelSize: root.dm === 1 ? root.rowFont(0.3) : root.fs; font.italic: root.fi
                         color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.35)
                         elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                         visible: root.dPrev !== "" && (root.dm === 1 || root.dm === 3)
@@ -260,47 +319,64 @@ PlasmoidItem {
                         height: root.dm === 0 ? parent.height : (root.dm === 1 ? parent.height * 0.4 : parent.height * 0.5)
                         clip: true
 
-                        Column {
+                        // 用锚点定位而非 Column：主行隐藏（卡拉OK接管）时副行仍固定在底部，互不重叠
+                        Item {
                             anchors.fill: parent
                             PlasmaComponents3.Label {
                                 id: plainLabel
                                 width: parent.width
-                                height: (root.variant === 3 && root.tlLyric !== "") ? parent.height * 0.62 : parent.height
+                                anchors.top: parent.top
+                                height: root.subVisible() ? parent.height * 0.5 : parent.height
                                 text: root.dLyric
-                                font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
+                                font.pixelSize: root.rowFont(root.dm === 1 ? 0.4 : (root.subVisible() ? 0.5 : 1))
+                                font.weight: root.fw; font.italic: root.fi
                                 color: Kirigami.Theme.textColor
                                 elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                                 visible: !root.karaoke
                             }
-                            // 原词 + 翻译 模式：当前行下方以小字显示翻译
+                            // 双行模式：原词在上、翻译/音译在下，两行等高
                             PlasmaComponents3.Label {
-                                id: tlLabel
+                                id: subLabel
                                 width: parent.width
-                                height: (root.variant === 3 && root.tlLyric !== "") ? parent.height * 0.38 : 0
-                                visible: root.variant === 3 && root.tlLyric !== ""
-                                text: root.tlLyric
-                                font.pixelSize: Math.max(7, root.fs * 0.55)
+                                anchors.bottom: parent.bottom
+                                height: root.subVisible() ? parent.height * 0.5 : 0
+                                visible: root.subVisible()
+                                text: root.subLyricText()
+                                font.pixelSize: root.rowFont(0.5)
                                 color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.55)
                                 elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                             }
                         }
 
-                        // 卡拉 OK：单层逐字，每个字在其时间点前后 120ms 内平滑渐亮
-                        Row {
+                        // 卡拉 OK：ShaderEffect 扫光——按 x 坐标把高亮/暗色做平滑渐变混合，
+                        // 边缘 12px 柔和过渡 + 微光，正唱到的字一半亮一半暗且无生硬接缝
+                        Item {
                             id: karaokeRow
                             visible: root.karaoke
                             anchors.horizontalCenter: parent.horizontalCenter
                             anchors.top: parent.top
-                            height: (root.variant === 3 && root.tlLyric !== "") ? parent.height * 0.62 : parent.height
-                            spacing: 0
-                            Repeater {
-                                model: root.karaoke ? root.lyricChars.length : 0
-                                delegate: Text {
-                                    text: root.lyricChars[index]
-                                    height: karaokeRow.height
-                                    font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
-                                    color: root.charColor(index)
-                                    verticalAlignment: Text.AlignVCenter
+                            width: textLayer.implicitWidth
+                            y: 0
+                            height: root.subVisible() ? parent.height * 0.5 : parent.height
+
+                            Text {
+                                id: textLayer
+                                anchors.fill: parent
+                                text: root.dLyric
+                                font.pixelSize: root.rowFont(root.dm === 1 ? 0.4 : (root.subVisible() ? 0.5 : 1))
+                                font.weight: root.fw; font.italic: root.fi
+                                color: "white"   // 实际颜色由 shader 输出，这里只提供字形 alpha
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                layer.enabled: true
+                                layer.smooth: true
+                                layer.effect: ShaderEffect {
+                                    property real progress: root.lineFill()
+                                    property color dimColor: root.dimColor()
+                                    property color hlColor: Kirigami.Theme.highlightColor
+                                    property real softPx: 12
+                                    property real widthPx: karaokeRow.width > 1 ? karaokeRow.width : 1
+                                    fragmentShader: "shaders/karaoke.frag.qsb"
                                 }
                             }
                         }
@@ -309,7 +385,7 @@ PlasmoidItem {
                     PlasmaComponents3.Label {
                         text: root.dNext; width: parent.width; clip: true
                         height: root.dm === 2 ? parent.height * 0.5 : (root.dm === 1 ? parent.height * 0.3 : 0)
-                        font.pixelSize: root.fs; font.italic: root.fi
+                        font.pixelSize: root.dm === 1 ? root.rowFont(0.3) : root.fs; font.italic: root.fi
                         color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.35)
                         elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                         visible: root.dNext !== "" && (root.dm === 1 || root.dm === 2)

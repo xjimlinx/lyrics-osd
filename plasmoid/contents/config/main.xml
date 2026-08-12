@@ -34,9 +34,6 @@
     <entry name="playerType" type="Int">
       <default>0</default>
     </entry>
-    <entry name="displayMode" type="Int">
-      <default>0</default>
-    </entry>
     <entry name="proxyUrl" type="String">
       <default></default>
     </entry>

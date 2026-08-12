@@ -16,7 +16,6 @@ KCM.SimpleKCM {
     property alias cfg_lyricsSource: sourceCombo.currentIndex
     property alias cfg_lyricsVariant: variantCombo.currentIndex
     property alias cfg_playerType: playerCombo.currentIndex
-    property alias cfg_displayMode: displayModeCombo.currentIndex
     property alias cfg_proxyUrl: proxyField.text
     property alias cfg_showProgress: progressCheck.checked
     property alias cfg_karaokeMode: karaokeCheck.checked
@@ -68,11 +67,12 @@ KCM.SimpleKCM {
         }
         QQC2.ComboBox {
             id: variantCombo; Kirigami.FormData.label: "歌词变体"
-            model: ["原词", "翻译", "音译", "原词 + 翻译"]
+            model: ["单行·原词", "单行·翻译", "单行·音译",
+                    "两行·原词 + 翻译", "两行·原词 + 音译", "三行·原词（上下句）"]
             Component.onCompleted: if (typeof Plasmoid !== "undefined") currentIndex = Plasmoid.configuration.lyricsVariant
         }
         QQC2.Label {
-            text: "切换显示原词、翻译或音译（MoeKoeMusic 的 KRC 歌词自带翻译/音译数据，无需联网）。没有翻译/音译的行自动回退显示原词；翻译/音译的卡拉OK高亮按原词时间比例映射，节奏依然跟唱。"
+            text: "单行：只显示当前行。两行：原词在上、翻译/音译在下，两行等高。三行：当前行居中，上下各显示一行原词。翻译/音译无数据时自动回退原词；卡拉OK扫光在原词行上，单行翻译/音译时按原词时间比例映射。字号会按行高自动缩小，多行时不会互相挤压。"
             color: Kirigami.Theme.disabledTextColor
             wrapMode: Text.Wrap
             bottomPadding: 6
@@ -136,19 +136,6 @@ KCM.SimpleKCM {
         }
         Kirigami.Separator { Kirigami.FormData.isSection: true }
 
-        QQC2.Label { text: "显示"; font.bold: true; topPadding: 8; bottomPadding: 4 }
-        QQC2.ComboBox {
-            id: displayModeCombo; Kirigami.FormData.label: "显示模式"
-            model: ["单行歌词", "三行歌词", "两行·当前在上", "两行·当前在下"]
-            Component.onCompleted: if (typeof Plasmoid !== "undefined") currentIndex = Number(Plasmoid.configuration.displayMode)
-        }
-        QQC2.Label {
-            text: "单行：只显示当前行。\n三行：当前行居中，上下各显示一行。\n两行·当前在上 / 在下：当前行固定在上方或下方。"
-            color: Kirigami.Theme.disabledTextColor
-            wrapMode: Text.Wrap
-            bottomPadding: 6
-            Layout.fillWidth: true
-        }
         QQC2.CheckBox {
             id: progressCheck; Kirigami.FormData.label: "进度条"
             text: "显示播放进度条"
