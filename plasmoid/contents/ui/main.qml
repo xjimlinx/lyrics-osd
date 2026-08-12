@@ -17,8 +17,9 @@ PlasmoidItem {
     property string dPrev: ""
     property string dNext: ""
     property real progress: 0
-    // 显示行数与歌词变体合并为一个设置：0-4 为单/双行（dm=0），5=三行（dm=1）
-    property int dm: root.variant === 5 ? 1 : 0
+    // 显示行数与歌词变体合并为一个设置：
+    // 0-4 单/双行内容（dm=0），5=三行原词（dm=1），6=两行原词当前+下一行（dm=2）
+    property int dm: root.variant === 6 ? 2 : (root.variant === 5 ? 1 : 0)
     property int fs: Plasmoid.configuration.fontPixelSize
     property int variant: Plasmoid.configuration.lyricsVariant
     property int fw: Plasmoid.configuration.fontBold ? Font.Bold : Font.Normal
@@ -50,6 +51,12 @@ PlasmoidItem {
                           && root.lyricChars.length > 0
     property real lineElapsed: 0
 
+    // 跑马灯：单句过长时水平滚动 + 边缘淡出（Apple 顶栏/酷狗同款思路）
+    property bool marqueeOn: false
+    property real marqueeOffset: 0
+    property real marqueeViewW: 0
+    property string marqueeText: ""
+
     // 封面
     property string coverPath: ""
     property int coverVer: 0
@@ -65,6 +72,42 @@ PlasmoidItem {
     function rowFont(frac) {
         // 按行高自动缩小字号：min(设置字号, 行高×0.88)，多行时不会互相挤压
         return Math.max(8, Math.min(root.fs, Math.floor(root.height * frac * 0.88)))
+    }
+
+    function currentFrac() {
+        // 当前行在 widget 高度中的占比：三行 0.4，两行 0.5，单行/双行内容 1
+        if (root.dm === 1) return 0.4
+        if (root.dm === 2 || root.dm === 3) return 0.5
+        return root.subVisible() ? 0.5 : 1
+    }
+
+    function measureMarquee() {
+        // 文本自然宽度超过可视宽度时开启跑马灯；未变化则保持现状
+        var viewW = currentLine.width
+        if (viewW <= 0) return
+        var tw = Math.max(plainLabel.implicitWidth, textLayer.implicitWidth)
+        var should = tw > viewW + 4
+        if (should && root.marqueeOn && root.marqueeText === root.dLyric && root.marqueeViewW === viewW) return
+        root.marqueeText = root.dLyric
+        root.marqueeViewW = viewW
+        if (should) {
+            var dist = tw - viewW + 30
+            var dur = Math.max(3000, dist / 0.045)
+            root.marqueeOn = true
+            marqueeSeq.stop()
+            marqueeAnim.from = 0
+            marqueeAnim.to = -dist
+            marqueeAnim.duration = dur
+            marqueeBackAnim.from = -dist
+            marqueeBackAnim.to = 0
+            marqueeBackAnim.duration = dur
+            root.marqueeOffset = 0
+            marqueeSeq.restart()
+        } else {
+            marqueeSeq.stop()
+            root.marqueeOn = false
+            root.marqueeOffset = 0
+        }
     }
 
     function rollTo(p, c, n) {
@@ -236,6 +279,7 @@ PlasmoidItem {
                         coverVer = cvVer
                         coverSource = cv ? "file://" + cv + "?v=" + cvVer : ""
                     }
+                    measureMarquee()
                 } catch(e) {}
             }
         }
@@ -306,7 +350,7 @@ PlasmoidItem {
                     PlasmaComponents3.Label {
                         text: root.dPrev; width: parent.width; clip: true
                         height: root.dm === 3 ? parent.height * 0.5 : (root.dm === 1 ? parent.height * 0.3 : 0)
-                        font.pixelSize: root.dm === 1 ? root.rowFont(0.3) : root.fs; font.italic: root.fi
+                        font.pixelSize: root.dm === 1 ? root.rowFont(0.3) : (root.dm === 3 ? root.rowFont(0.5) : root.fs); font.italic: root.fi
                         color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.35)
                         elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                         visible: root.dPrev !== "" && (root.dm === 1 || root.dm === 3)
@@ -318,20 +362,30 @@ PlasmoidItem {
                         width: parent.width
                         height: root.dm === 0 ? parent.height : (root.dm === 1 ? parent.height * 0.4 : parent.height * 0.5)
                         clip: true
+                        onWidthChanged: measureMarquee()
+                        // 跑马灯时给整行加边缘渐变淡出遮罩（Apple 顶栏歌词风格）
+                        layer.enabled: root.marqueeOn
+                        layer.smooth: true
+                        layer.effect: ShaderEffect {
+                            property real fadePx: 14
+                            property real viewW: currentLine.width > 1 ? currentLine.width : 1
+                            fragmentShader: "shaders/edgefade.frag.qsb"
+                        }
 
                         // 用锚点定位而非 Column：主行隐藏（卡拉OK接管）时副行仍固定在底部，互不重叠
                         Item {
                             anchors.fill: parent
                             PlasmaComponents3.Label {
                                 id: plainLabel
-                                width: parent.width
+                                width: implicitWidth
+                                x: root.marqueeOn ? root.marqueeOffset : Math.max(0, (parent.width - width) / 2)
                                 anchors.top: parent.top
                                 height: root.subVisible() ? parent.height * 0.5 : parent.height
                                 text: root.dLyric
-                                font.pixelSize: root.rowFont(root.dm === 1 ? 0.4 : (root.subVisible() ? 0.5 : 1))
+                                font.pixelSize: root.rowFont(root.currentFrac())
                                 font.weight: root.fw; font.italic: root.fi
                                 color: Kirigami.Theme.textColor
-                                elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideNone; maximumLineCount: 1; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter
                                 visible: !root.karaoke
                             }
                             // 双行模式：原词在上、翻译/音译在下，两行等高
@@ -353,7 +407,7 @@ PlasmoidItem {
                         Item {
                             id: karaokeRow
                             visible: root.karaoke
-                            anchors.horizontalCenter: parent.horizontalCenter
+                            x: root.marqueeOn ? root.marqueeOffset : Math.max(0, (currentLine.width - width) / 2)
                             anchors.top: parent.top
                             width: textLayer.implicitWidth
                             y: 0
@@ -363,7 +417,7 @@ PlasmoidItem {
                                 id: textLayer
                                 anchors.fill: parent
                                 text: root.dLyric
-                                font.pixelSize: root.rowFont(root.dm === 1 ? 0.4 : (root.subVisible() ? 0.5 : 1))
+                                font.pixelSize: root.rowFont(root.currentFrac())
                                 font.weight: root.fw; font.italic: root.fi
                                 color: "white"   // 实际颜色由 shader 输出，这里只提供字形 alpha
                                 horizontalAlignment: Text.AlignHCenter
@@ -385,7 +439,7 @@ PlasmoidItem {
                     PlasmaComponents3.Label {
                         text: root.dNext; width: parent.width; clip: true
                         height: root.dm === 2 ? parent.height * 0.5 : (root.dm === 1 ? parent.height * 0.3 : 0)
-                        font.pixelSize: root.dm === 1 ? root.rowFont(0.3) : root.fs; font.italic: root.fi
+                        font.pixelSize: root.dm === 1 ? root.rowFont(0.3) : (root.dm === 2 ? root.rowFont(0.5) : root.fs); font.italic: root.fi
                         color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.35)
                         elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                         visible: root.dNext !== "" && (root.dm === 1 || root.dm === 2)
@@ -412,5 +466,32 @@ PlasmoidItem {
         to: 0
         duration: 150
         easing.type: Easing.OutCubic
+    }
+
+    // 跑马灯：乒乓式——正向滚到行尾 → 停顿 → 反向滚回行首 → 停顿，无跳变
+    SequentialAnimation {
+        id: marqueeSeq
+        running: false
+        loops: Animation.Infinite
+        NumberAnimation {
+            id: marqueeAnim
+            target: root
+            property: "marqueeOffset"
+            from: 0
+            to: -200
+            duration: 4000
+            easing.type: Easing.Linear
+        }
+        PauseAnimation { duration: 1000 }
+        NumberAnimation {
+            id: marqueeBackAnim
+            target: root
+            property: "marqueeOffset"
+            from: -200
+            to: 0
+            duration: 4000
+            easing.type: Easing.Linear
+        }
+        PauseAnimation { duration: 800 }
     }
 }

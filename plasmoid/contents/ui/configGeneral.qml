@@ -68,11 +68,12 @@ KCM.SimpleKCM {
         QQC2.ComboBox {
             id: variantCombo; Kirigami.FormData.label: "歌词变体"
             model: ["单行·原词", "单行·翻译", "单行·音译",
-                    "两行·原词 + 翻译", "两行·原词 + 音译", "三行·原词（上下句）"]
+                    "两行·原词 + 翻译", "两行·原词 + 音译",
+                    "三行·原词（上下句）", "两行·原词（当前 + 下一行）"]
             Component.onCompleted: if (typeof Plasmoid !== "undefined") currentIndex = Plasmoid.configuration.lyricsVariant
         }
         QQC2.Label {
-            text: "单行：只显示当前行。两行：原词在上、翻译/音译在下，两行等高。三行：当前行居中，上下各显示一行原词。翻译/音译无数据时自动回退原词；卡拉OK扫光在原词行上，单行翻译/音译时按原词时间比例映射。字号会按行高自动缩小，多行时不会互相挤压。"
+            text: "单行：只显示当前行。两行·原词+翻译/音译：原词在上、翻译/音译在下，两行等高。两行·原词：当前行在上、下一行原词在下。三行：当前行居中，上下各显示一行原词。翻译/音译无数据时自动回退原词；卡拉OK扫光在原词行上，单行翻译/音译时按原词时间比例映射。字号会按行高自动缩小，多行时不会互相挤压。"
             color: Kirigami.Theme.disabledTextColor
             wrapMode: Text.Wrap
             bottomPadding: 6
