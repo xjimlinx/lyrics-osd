@@ -14,6 +14,7 @@ KCM.SimpleKCM {
     property alias cfg_widgetWidth: widthSpinBox.value
     property alias cfg_widgetHeight: heightSpinBox.value
     property alias cfg_lyricsSource: sourceCombo.currentIndex
+    property alias cfg_lyricsVariant: variantCombo.currentIndex
     property alias cfg_playerType: playerCombo.currentIndex
     property alias cfg_displayMode: displayModeCombo.currentIndex
     property alias cfg_proxyUrl: proxyField.text
@@ -60,6 +61,18 @@ KCM.SimpleKCM {
         }
         QQC2.Label {
             text: "全部（并行）：多来源同时查询，取先返回的结果。\nQQ Music 原生：仅用播放器提供的歌词。\n仅 lrclib / 仅网易云：只从对应在线源获取。\n优先 lrclib / 优先网易云：在线源优先，缺失时回退播放器原生歌词。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
+        QQC2.ComboBox {
+            id: variantCombo; Kirigami.FormData.label: "歌词变体"
+            model: ["原词", "翻译", "音译", "原词 + 翻译"]
+            Component.onCompleted: if (typeof Plasmoid !== "undefined") currentIndex = Plasmoid.configuration.lyricsVariant
+        }
+        QQC2.Label {
+            text: "切换显示原词、翻译或音译（MoeKoeMusic 的 KRC 歌词自带翻译/音译数据，无需联网）。没有翻译/音译的行自动回退显示原词；翻译/音译的卡拉OK高亮按原词时间比例映射，节奏依然跟唱。"
             color: Kirigami.Theme.disabledTextColor
             wrapMode: Text.Wrap
             bottomPadding: 6

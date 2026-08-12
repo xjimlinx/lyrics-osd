@@ -19,11 +19,18 @@ PlasmoidItem {
     property real progress: 0
     property int dm: Plasmoid.configuration.displayMode
     property int fs: Plasmoid.configuration.fontPixelSize
+    property int variant: Plasmoid.configuration.lyricsVariant
     property int fw: Plasmoid.configuration.fontBold ? Font.Bold : Font.Normal
     property bool fi: Plasmoid.configuration.fontItalic
     property bool sp: Plasmoid.configuration.showProgress
     property bool karaokeMode: Plasmoid.configuration.karaokeMode
     property bool showCover: Plasmoid.configuration.showCover
+    property string tlLyric: ""      // 当前行翻译
+    property string tlPrev: ""
+    property string tlNext: ""
+    property string romLyric: ""     // 当前行音译
+    property string romPrev: ""
+    property string romNext: ""
 
     // 歌曲信息（封面与逐字推进用）
     property real position: 0
@@ -87,6 +94,28 @@ PlasmoidItem {
         )
     }
 
+    function variantText(base, tl, rom) {
+        // 变体选择：1=翻译，2=音译；缺失时回退原词
+        if (root.variant === 1 && tl) return tl
+        if (root.variant === 2 && rom) return rom
+        return base
+    }
+
+    function mapCharTimes(origTimes, origText, newText) {
+        // 翻译/音译没有逐字时间戳，把原词的逐字时间按字符数比例映射过去，
+        // 让卡拉 OK 高亮在翻译文本上同样跟唱（逐词对齐为近似值）。
+        var n = newText.length
+        var m = origText.length
+        var out = []
+        if (n === 0 || m === 0) return out
+        if (!Array.isArray(origTimes) || origTimes.length !== m) return out
+        for (var i = 0; i < n; i++) {
+            var j = Math.round(i * (m - 1) / Math.max(1, n - 1))
+            out.push(origTimes[j])
+        }
+        return out
+    }
+
     function readMeta() {
         var xhr = new XMLHttpRequest()
         xhr.open("GET", "file:///tmp/lyrics-meta.json")
@@ -98,13 +127,34 @@ PlasmoidItem {
                     if (m.artist && t === m.title) t = m.artist + " - " + t
                     var p = m.prev_line || ""
                     var n = m.next_line || ""
+                    tlLyric = m.tl_line || ""
+                    tlPrev = m.tl_prev || ""
+                    tlNext = m.tl_next || ""
+                    romLyric = m.rom_line || ""
+                    romPrev = m.rom_prev || ""
+                    romNext = m.rom_next || ""
+                    var disp = variantText(t, tlLyric, romLyric)
+                    var dispP = variantText(p, tlPrev, romPrev)
+                    var dispN = variantText(n, tlNext, romNext)
                     if (t !== lyric) {
                         prevLine = p; lyric = t; nextLine = n
-                        buildChars(t, Array.isArray(m.char_times) ? m.char_times : [])
-                        rollTo(p, t, n)
+                        var origChars = Array.isArray(m.char_times) ? m.char_times : []
+                        if (root.variant === 1 && tlLyric) {
+                            buildChars(tlLyric, mapCharTimes(origChars, t, tlLyric))
+                        } else if (root.variant === 2 && romLyric) {
+                            buildChars(romLyric, mapCharTimes(origChars, t, romLyric))
+                        } else {
+                            buildChars(t, origChars)
+                        }
+                        rollTo(dispP, disp, dispN)
                     } else {
                         prevLine = p; lyric = t; nextLine = n
-                        dPrev = p; dLyric = t; dNext = n
+                        dPrev = dispP; dLyric = disp; dNext = dispN
+                        if (root.variant === 1 && tlLyric) {
+                            buildChars(tlLyric, mapCharTimes(m.char_times, t, tlLyric))
+                        } else if (root.variant === 2 && romLyric) {
+                            buildChars(romLyric, mapCharTimes(m.char_times, t, romLyric))
+                        }
                     }
                     position = m.position || 0
                     lineStart = m.line_start || 0
@@ -210,14 +260,29 @@ PlasmoidItem {
                         height: root.dm === 0 ? parent.height : (root.dm === 1 ? parent.height * 0.4 : parent.height * 0.5)
                         clip: true
 
-                        PlasmaComponents3.Label {
-                            id: plainLabel
+                        Column {
                             anchors.fill: parent
-                            text: root.dLyric
-                            font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
-                            color: Kirigami.Theme.textColor
-                            elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                            visible: !root.karaoke
+                            PlasmaComponents3.Label {
+                                id: plainLabel
+                                width: parent.width
+                                height: (root.variant === 3 && root.tlLyric !== "") ? parent.height * 0.62 : parent.height
+                                text: root.dLyric
+                                font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
+                                color: Kirigami.Theme.textColor
+                                elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                visible: !root.karaoke
+                            }
+                            // 原词 + 翻译 模式：当前行下方以小字显示翻译
+                            PlasmaComponents3.Label {
+                                id: tlLabel
+                                width: parent.width
+                                height: (root.variant === 3 && root.tlLyric !== "") ? parent.height * 0.38 : 0
+                                visible: root.variant === 3 && root.tlLyric !== ""
+                                text: root.tlLyric
+                                font.pixelSize: Math.max(7, root.fs * 0.55)
+                                color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.55)
+                                elide: Text.ElideRight; maximumLineCount: 1; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                            }
                         }
 
                         // 卡拉 OK：单层逐字，每个字在其时间点前后 120ms 内平滑渐亮
@@ -225,13 +290,14 @@ PlasmoidItem {
                             id: karaokeRow
                             visible: root.karaoke
                             anchors.horizontalCenter: parent.horizontalCenter
-                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.top: parent.top
+                            height: (root.variant === 3 && root.tlLyric !== "") ? parent.height * 0.62 : parent.height
                             spacing: 0
                             Repeater {
                                 model: root.karaoke ? root.lyricChars.length : 0
                                 delegate: Text {
                                     text: root.lyricChars[index]
-                                    height: currentLine.height
+                                    height: karaokeRow.height
                                     font.pixelSize: root.fs; font.weight: root.fw; font.italic: root.fi
                                     color: root.charColor(index)
                                     verticalAlignment: Text.AlignVCenter

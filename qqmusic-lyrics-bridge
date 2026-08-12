@@ -587,16 +587,53 @@ def parse_lrc(lrc_text):
     return lines
 
 
-def parse_krc(krc_text):
-    """Parse KRC format (MoeKoeMusic / KuGou): [start_ms,duration_ms]text.
+def _decode_krc_language(code):
+    """Decode KRC [language:base64] JSON into translation/romanization maps.
 
-    Returns [(time_sec, text, chars), ...] where chars is a list of
-    (char_block, start_sec, end_sec) triples with absolute timestamps.
-    Lines without character-level tags get an empty chars list.
+    KuGou KRC files carry extra language tracks in a base64-encoded JSON
+    header: content sections with type==1 are translations and type==0 are
+    romanizations, each an array indexed by lyric line. Returns
+    (translations, romanizations) dicts {line_index: text}.
     """
-    if not krc_text:
-        return []
+    translations = {}
+    romanizations = {}
+    try:
+        cleaned = re.sub(r"[^A-Za-z0-9+/=]", "", code)
+        padded = cleaned + "=" * ((4 - len(cleaned) % 4) % 4)
+        data = json.loads(base64.b64decode(padded).decode("utf-8", "replace"))
+        content = (data.get("content") or []) if isinstance(data, dict) else []
+        for section in content:
+            if not isinstance(section, dict):
+                continue
+            track = section.get("lyricContent")
+            if not isinstance(track, list):
+                continue
+            if section.get("type") in (1, "1"):
+                for idx, entry in enumerate(track):
+                    if isinstance(entry, (list, tuple)) and entry and entry[0]:
+                        translations[idx] = entry[0]
+            elif section.get("type") in (0, "0"):
+                for idx, entry in enumerate(track):
+                    if isinstance(entry, list):
+                        text = "".join(str(x) for x in entry)
+                        if text:
+                            romanizations[idx] = text
+    except Exception as e:
+        log.debug(f"krc language decode error: {e}")
+    return translations, romanizations
+
+
+def parse_krc_full(krc_text):
+    """Parse KRC (MoeKoeMusic / KuGou) into lines plus translation tracks.
+
+    Returns (lines, translations, romanizations): lines has the same shape as
+    parse_krc(); the two extra lists are per-line strings aligned to it ("").
+    """
     lines = []
+    translations = []
+    romanizations = []
+    tl_map = {}
+    rom_map = {}
     offset_ms = 0
     pattern = re.compile(r"^\[(\d+),(\d+)\](.*)$")
     char_re = re.compile(r"<(\d+),(\d+),\d+>([^<]+)")
@@ -608,6 +645,10 @@ def parse_krc(krc_text):
         if m:
             offset_ms = int(m.group(1))
             continue
+        m = re.match(r"^\[language:(.*)\]$", line)
+        if m:
+            tl_map, rom_map = _decode_krc_language(m.group(1))
+            continue
         m = pattern.match(line)
         if not m:
             continue  # skip metadata like [ti:...] [ar:...] [hash:...]
@@ -615,9 +656,27 @@ def parse_krc(krc_text):
         text = re.sub(r"<\d+,\d+,\d+>", "", m.group(3)).strip()
         if text:
             chars = _expand_krc_chars(m.group(3), start_ms, int(m.group(2)))
+            idx = len(lines)
             lines.append((start_ms / 1000.0, text, chars))
-    lines.sort()
-    return lines
+            translations.append(tl_map.get(idx, ""))
+            romanizations.append(rom_map.get(idx, ""))
+    lines.sort(key=lambda x: x[0])
+    # Re-align the extra tracks after sorting (rare, but keep them consistent).
+    if translations or romanizations:
+        order = sorted(range(len(lines)), key=lambda i: lines[i][0])
+        translations = [translations[i] for i in order]
+        romanizations = [romanizations[i] for i in order]
+    return lines, translations, romanizations
+
+
+def parse_krc(krc_text):
+    """Parse KRC format (MoeKoeMusic / KuGou): [start_ms,duration_ms]text.
+
+    Returns [(time_sec, text, chars), ...] where chars is a list of
+    (char_block, start_sec, end_sec) triples with absolute timestamps.
+    Lines without character-level tags get an empty chars list.
+    """
+    return parse_krc_full(krc_text)[0]
 
 
 def _expand_krc_chars(content, start_ms, line_dur_ms):
@@ -697,7 +756,8 @@ def write_meta(info):
 def build_meta(current_line, prev_line, next_line, current_idx, progress,
                position=0.0, duration=0.0, playing=False, total_lines=0,
                title="", artist="", line_start=0.0, char_times=None,
-               cover="", cover_ver=0):
+               cover="", cover_ver=0, tl_line="", tl_prev="", tl_next="",
+               rom_line="", rom_prev="", rom_next=""):
     """Build the /tmp/lyrics-meta.json dict with a stable field set."""
     return {
         "title": title, "artist": artist, "position": position,
@@ -706,6 +766,8 @@ def build_meta(current_line, prev_line, next_line, current_idx, progress,
         "next_line": next_line, "current_idx": current_idx,
         "progress": progress, "line_start": line_start,
         "char_times": char_times or [], "cover": cover, "cover_ver": cover_ver,
+        "tl_line": tl_line, "tl_prev": tl_prev, "tl_next": tl_next,
+        "rom_line": rom_line, "rom_prev": rom_prev, "rom_next": rom_next,
     }
 
 
@@ -893,6 +955,8 @@ class LyricsBridge:
         self.current_artist = ""
         self.current_duration = 0
         self.parsed_lrc = []
+        self.tl_lines = []
+        self.rom_lines = []
         self.song_start_time = 0
         self.position = 0
         self.playing = False
@@ -1068,7 +1132,8 @@ class LyricsBridge:
                 source in ("lrclib_first", "netease_first") and not self.parsed_lrc
             )
             if use_krc and krc:
-                self.parsed_lrc = parse_krc(krc)
+                parsed, self.tl_lines, self.rom_lines = parse_krc_full(krc)
+                self.parsed_lrc = parsed
 
             # Anchor position extrapolation to the freshest reported time so
             # the steady refresh below stays in sync between WS messages.
@@ -1111,6 +1176,12 @@ class LyricsBridge:
                 char_times = [round(c[1] - ts, 3) for c in chars]
             else:
                 break
+        tl_line = self.tl_lines[current_idx] if current_idx < len(self.tl_lines) else ""
+        tl_prev = self.tl_lines[current_idx - 1] if 0 <= current_idx - 1 < len(self.tl_lines) else ""
+        tl_next = self.tl_lines[current_idx + 1] if current_idx + 1 < len(self.tl_lines) else ""
+        rom_line = self.rom_lines[current_idx] if current_idx < len(self.rom_lines) else ""
+        rom_prev = self.rom_lines[current_idx - 1] if 0 <= current_idx - 1 < len(self.rom_lines) else ""
+        rom_next = self.rom_lines[current_idx + 1] if current_idx + 1 < len(self.rom_lines) else ""
         write_meta(build_meta(
             line, prev_line, next_line, current_idx,
             round(self.position / self.current_duration, 3) if self.current_duration > 0 else 0,
@@ -1119,6 +1190,8 @@ class LyricsBridge:
             title=self.current_title, artist=self.current_artist,
             line_start=line_start, char_times=char_times,
             cover=self._cover_path, cover_ver=self._cover_ver,
+            tl_line=tl_line, tl_prev=tl_prev, tl_next=tl_next,
+            rom_line=rom_line, rom_prev=rom_prev, rom_next=rom_next,
         ))
 
         # Steady cadence: honor the configured refresh interval.
@@ -1391,6 +1464,8 @@ class LyricsBridge:
             self.current_title = title
             self.current_artist = artist
             self.parsed_lrc = []
+            self.tl_lines = []
+            self.rom_lines = []
             self.song_start_time = time.time() - position
 
             # Write fallback immediately (new song title) so the widget reacts
@@ -1445,6 +1520,12 @@ class LyricsBridge:
                     break
 
             progress = self.position / duration if duration > 0 else 0
+            tl_line = self.tl_lines[current_idx] if current_idx < len(self.tl_lines) else ""
+            tl_prev = self.tl_lines[current_idx - 1] if 0 <= current_idx - 1 < len(self.tl_lines) else ""
+            tl_next = self.tl_lines[current_idx + 1] if current_idx + 1 < len(self.tl_lines) else ""
+            rom_line = self.rom_lines[current_idx] if current_idx < len(self.rom_lines) else ""
+            rom_prev = self.rom_lines[current_idx - 1] if 0 <= current_idx - 1 < len(self.rom_lines) else ""
+            rom_next = self.rom_lines[current_idx + 1] if current_idx + 1 < len(self.rom_lines) else ""
             write_meta(build_meta(
                 line, prev_line, next_line, current_idx, round(progress, 3),
                 position=self.position, duration=duration,
@@ -1452,6 +1533,8 @@ class LyricsBridge:
                 title=self.current_title, artist=self.current_artist,
                 line_start=line_start, char_times=char_times,
                 cover=self._cover_path, cover_ver=self._cover_ver,
+                tl_line=tl_line, tl_prev=tl_prev, tl_next=tl_next,
+                rom_line=rom_line, rom_prev=rom_prev, rom_next=rom_next,
             ))
 
     def _fetch_lyrics_async(self, title, artist, album=""):
