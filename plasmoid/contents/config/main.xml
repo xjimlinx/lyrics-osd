@@ -43,6 +43,9 @@
     <entry name="karaokeMode" type="Bool">
       <default>true</default>
     </entry>
+    <entry name="highlightColor" type="String">
+      <default></default>
+    </entry>
     <entry name="showCover" type="Bool">
       <default>true</default>
     </entry>

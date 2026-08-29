@@ -17,8 +17,8 @@ void main() {
     float x = qt_TexCoord0.x * widthPx;
     float edge = progress * widthPx;
     float t = smoothstep(edge - softPx, edge + softPx, x);
-    // 高亮部分往白色方向提亮，唱过的字更醒目
-    vec4 hl = mix(hlColor, vec4(1.0, 1.0, 1.0, 1.0), 0.3);
+    // 精确使用配置或主题提供的颜色，不额外混入固定颜色。
+    vec4 hl = hlColor;
     vec4 col = mix(hl, dimColor, t);
     float glow = 1.0 - smoothstep(edge - softPx * 2.0, edge, x);
     col = mix(col, hl, glow * 0.25);

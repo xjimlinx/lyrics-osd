@@ -26,6 +26,7 @@ PlasmoidItem {
     property bool fi: Plasmoid.configuration.fontItalic
     property bool sp: Plasmoid.configuration.showProgress
     property bool karaokeMode: Plasmoid.configuration.karaokeMode
+    property string configuredHighlightColor: Plasmoid.configuration.highlightColor || ""
     property bool showCover: Plasmoid.configuration.showCover
     property string tlLyric: ""      // 当前行翻译
     property string tlPrev: ""
@@ -159,6 +160,12 @@ PlasmoidItem {
     function dimColor() {
         var base = Kirigami.Theme.textColor
         return Qt.rgba(base.r, base.g, base.b, 0.42)
+    }
+
+    function highlightColor() {
+        var value = root.configuredHighlightColor.trim()
+        return /^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value)
+                ? value : Kirigami.Theme.highlightColor
     }
 
     function charFill(i) {
@@ -427,7 +434,7 @@ PlasmoidItem {
                                 layer.effect: ShaderEffect {
                                     property real progress: root.lineFill()
                                     property color dimColor: root.dimColor()
-                                    property color hlColor: Kirigami.Theme.highlightColor
+                                    property color hlColor: root.highlightColor()
                                     property real softPx: 12
                                     property real widthPx: karaokeRow.width > 1 ? karaokeRow.width : 1
                                     fragmentShader: "shaders/karaoke.frag.qsb"
@@ -450,7 +457,7 @@ PlasmoidItem {
                     anchors.bottom: parent.bottom
                     width: parent.width * (root.progress > 0 ? root.progress : 0)
                     height: 2
-                    color: Kirigami.Theme.highlightColor
+                    color: root.highlightColor()
                     visible: root.sp && root.progress > 0
                     Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutQuad } }
                 }

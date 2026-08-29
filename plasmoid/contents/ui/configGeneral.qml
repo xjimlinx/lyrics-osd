@@ -7,6 +7,11 @@ import org.kde.kcmutils as KCM
 KCM.SimpleKCM {
     id: page
 
+    // Kirigami.FormLayout 会在输入框获得焦点时把它自动滚动到页面中央，
+    // 在较长的 plasmoid 配置页中看起来像一次“翻页”。这里关闭该自动
+    // 居中行为；滚轮、触摸板和滚动条仍由 SimpleKCM 的 Flickable 处理。
+    function ensureVisible(item, xOffset, yOffset) {}
+
     property alias cfg_refreshInterval: refreshSpinBox.value
     property alias cfg_fontPixelSize: fontSizeSpinBox.value
     property alias cfg_fontBold: boldCheckBox.checked
@@ -19,9 +24,28 @@ KCM.SimpleKCM {
     property alias cfg_proxyUrl: proxyField.text
     property alias cfg_showProgress: progressCheck.checked
     property alias cfg_karaokeMode: karaokeCheck.checked
+    property alias cfg_highlightColor: highlightColorField.text
     property alias cfg_showCover: coverCheck.checked
     // clearCache 是动作型配置（按钮直接写入），仅需接收框架的初始值，避免告警
     property bool cfg_clearCache: false
+
+    // Plasma 6 会把 schema 默认值作为 cfg_*Default 初始属性注入配置页。
+    // 显式接收这些属性，避免页面初始化失败并被配置容器反复重建。
+    property var cfg_refreshIntervalDefault
+    property var cfg_fontPixelSizeDefault
+    property var cfg_fontBoldDefault
+    property var cfg_fontItalicDefault
+    property var cfg_widgetWidthDefault
+    property var cfg_widgetHeightDefault
+    property var cfg_lyricsSourceDefault
+    property var cfg_lyricsVariantDefault
+    property var cfg_clearCacheDefault
+    property var cfg_playerTypeDefault
+    property var cfg_proxyUrlDefault
+    property var cfg_showProgressDefault
+    property var cfg_karaokeModeDefault
+    property var cfg_highlightColorDefault
+    property var cfg_showCoverDefault
 
     Kirigami.FormLayout {
         QQC2.Label { text: "刷新"; font.bold: true; topPadding: 8; bottomPadding: 4 }
@@ -154,6 +178,19 @@ KCM.SimpleKCM {
         }
         QQC2.Label {
             text: "唱到的字高亮、未唱到的字变暗，逐字点亮。需要 MoeKoeMusic 的 KRC 歌词，其他歌词源自动整行显示。"
+            color: Kirigami.Theme.disabledTextColor
+            wrapMode: Text.Wrap
+            bottomPadding: 6
+            Layout.fillWidth: true
+        }
+        QQC2.TextField {
+            id: highlightColorField
+            Kirigami.FormData.label: "高亮颜色"
+            placeholderText: "跟随系统（例如 #00BFFF）"
+            inputMethodHints: Qt.ImhNoPredictiveText
+        }
+        QQC2.Label {
+            text: "卡拉 OK 扫光和进度条颜色。填写 #RRGGBB 或 #AARRGGBB；留空则跟随 Plasma 系统强调色。"
             color: Kirigami.Theme.disabledTextColor
             wrapMode: Text.Wrap
             bottomPadding: 6

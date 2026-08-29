@@ -95,7 +95,11 @@ fi
 
 # ── 6. Restart plasmashell ──
 echo "=> [6/6] Reloading plasmashell to pick up new widget..."
-setsid nohup plasmashell --replace >/tmp/lyrics-osd-plasmashell.log 2>&1 < /dev/null &
+if systemctl --user cat plasma-plasmashell.service >/dev/null 2>&1; then
+    systemctl --user restart plasma-plasmashell.service
+else
+    setsid nohup plasmashell --replace >/tmp/lyrics-osd-plasmashell.log 2>&1 < /dev/null &
+fi
 sleep 2
 
 echo ""
